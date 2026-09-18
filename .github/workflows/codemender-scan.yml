@@ -252,11 +252,23 @@ jobs:
       #       -f sarif="$SARIF_BASE64" \
       #       -f tool_name="CodeMender"
       
+      # Extract the Git metadata from the subfolder and save to $GITHUB_ENV
+      - name: Extract Target Git Metadata
+        run: |
+          cd ${{ inputs.repo_name }}
+          echo "TARGET_COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "TARGET_BRANCH_REF=$(git symbolic-ref HEAD 2>/dev/null || echo 'refs/heads/main')" >> $GITHUB_ENV
+          cd ..
+
+      # Upload the SARIF file by feeding the extracted data explicitly
       - name: Upload SARIF payload via official Engine
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'output.sarif'
-          checkout_path: ${{ github.workspace }}/${{ inputs.repo_name }}
+          checkout_path: '${{ github.workspace }}/cm-python-sample'
+          repository: 'CodeMender-Demo/cm-python-sample'
+          commit_sha: ${{ env.TARGET_COMMIT_SHA }}
+          ref: ${{ env.TARGET_BRANCH_REF }}
           token: ${{ secrets.GITHUB_TOKEN }}
           tool_name: 'CodeMender'
 
