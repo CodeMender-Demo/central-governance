@@ -77,7 +77,7 @@ jobs:
           # config.yaml updates
           cat <<EOF > ~/.codemender/config.yaml
           project_paths:
-            - "~/${{ github.event.pull_request.head.repo.full_name }}"
+            - "/home/runner/work/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}"
           vcs:
             type: "git"
             commands:
