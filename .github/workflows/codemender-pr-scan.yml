@@ -26,6 +26,18 @@ jobs:
           echo "PR for: \n\n ${{ github.event.repository.name }}" >> $GITHUB_STEP_SUMMARY
           echo "Repo Full Name: \n\n ${{ github.event.pull_request.head.repo.full_name }}" >> $GITHUB_STEP_SUMMARY
           echo "Title: \n\n ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          token: ${{ secrets.GH_TOKEN }} # Needs read/write access to the target repo
+          fetch-depth: 0
+          path: ${{ github.event.pull_request.head.repo.name }}
+
+      - name: Explore file system after checkout
+        run: |
+          echo ls -Ral
       
       - name: Get Changed Files via GitHub API
         env:
@@ -37,16 +49,6 @@ jobs:
 
           # 2. Iterate through the list/array
           for file in "${CHANGED_FILES[@]}"; do
-            echo "Processing modified file: $file"
+            echo "Processing modified file: $file" >> $GITHUB_STEP_SUMMARY
           done
-
-      # Needs to be updated before use
-      # - name: Checkout Code
-      #   uses: actions/checkout@v4
-      #   with:
-      #     repository: ${{ github.event.pull_request.head.repo.full_name }}
-      #     token: ${{ secrets.ORG_READ_TOKEN }} # Needs read/write access to the target repo
-      #     fetch-depth: 0
-      #     path: ${{ github.event.pull_request.head.repo.name }}
-    
-      
+          
