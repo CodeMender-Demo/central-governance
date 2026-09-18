@@ -15,3 +15,25 @@ jobs:
         with:
           workload_identity_provider: "${{ secrets.WIF_PROVIDER }}"
           service_account: "${{ secrets.WIF_SERVICE_ACCOUNT }}"
+
+      # Set up the gcloud CLI
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # Download and Install CodeMender On-The-Fly
+      - name: Install CodeMender CLI
+        run: |
+          echo "Downloading CodeMender from Artifact Registry..."
+          gcloud artifacts generic download \
+            --project=cmoc-prod \
+            --location=us \
+            --repository=codemender-cli-production \
+            --package=cm \
+            --version=stable \
+            --name=cm-linux-amd64.zip \
+            --destination=./
+            
+          unzip -q cm-linux-amd64.zip
+          chmod +x cm
+          sudo mv cm /usr/local/bin/cm
+          cm --version
