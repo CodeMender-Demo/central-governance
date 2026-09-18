@@ -23,7 +23,7 @@ jobs:
           echo "Running mandatory compliance validations for repo ${{ github.event.action }}..."
           echo "Submitted by ${{ github.actor }}"
           # Insert your test scripts, linting tools, or security scans here
-          echo "PR for: \n\n ${{ github.event.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "PR for: \n\n ${{ github.event.repository.name }}" >> $GITHUB_STEP_SUMMARY
           echo "Repo Full Name: \n\n ${{ github.event.pull_request.head.repo.full_name }}" >> $GITHUB_STEP_SUMMARY
           echo "Title: \n\n ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
       
@@ -31,19 +31,22 @@ jobs:
       # - name: Checkout Code
       #   uses: actions/checkout@v4
       #   with:
-      #     fetch-depth: 0 # Required to accurately compare branches
+      #     repository: ${{ github.event.pull_request.head.repo.full_name }}
+      #     token: ${{ secrets.ORG_READ_TOKEN }} # Needs read/write access to the target repo
+      #     fetch-depth: 0
+      #     path: ${{ github.event.pull_request.head.repo.name }}
     
-      # - name: Get Changed Files
-      #   id: git-diff
-      #   run: |
-      #     # Fetch the target base branch to ensure git can compare against it
-      #     git fetch origin ${{ github.event.pull_request.base.ref }}
+      - name: Get Changed Files
+        id: git-diff
+        run: |
+          # Fetch the target base branch to ensure git can compare against it
+          git fetch origin ${{ github.event.pull_request.base.ref }}
           
-      #     # Get file names only (--name-only) and filter for Added, Copied, Modified, Renamed, Type-changed
-      #     FILES=$(git diff --name-only --diff-filter=ACMRT origin/${{ github.event.pull_request.base.ref }} HEAD | xargs)
+          # Get file names only (--name-only) and filter for Added, Copied, Modified, Renamed, Type-changed
+          FILES=$(git diff --name-only --diff-filter=ACMRT origin/${{ github.event.pull_request.base.ref }} HEAD | xargs)
           
-      #     echo "files=$FILES" >> $GITHUB_OUTPUT
+          echo "files=$FILES" >> $GITHUB_OUTPUT
     
-      # - name: Use the File Paths
-      #   run: |
-      #     echo "The edited files are: ${{ steps.git-diff.outputs.files }}"
+      - name: Use the File Paths
+        run: |
+          echo "The edited files are: ${{ steps.git-diff.outputs.files }}" >> $GITHUB_STEP_SUMMARY
