@@ -23,5 +23,27 @@ jobs:
           echo "Running mandatory compliance validations for repo ${{ github.event.action }}..."
           echo "Submitted by ${{ github.actor }}"
           # Insert your test scripts, linting tools, or security scans here
-          echo "PR data: \n\n ${{ github.event }}"
-          echo "PR data: \n\n ${{ github.event }}" >> $GITHUB_STEP_SUMMARY
+          echo "PR for: \n\n ${{ github.event.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "Repo Full Name: \n\n ${{ github.event.pull_request.head.repo.full_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "Title: \n\n ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
+      
+      # Needs to be updated before use
+      # - name: Checkout Code
+      #   uses: actions/checkout@v4
+      #   with:
+      #     fetch-depth: 0 # Required to accurately compare branches
+    
+      # - name: Get Changed Files
+      #   id: git-diff
+      #   run: |
+      #     # Fetch the target base branch to ensure git can compare against it
+      #     git fetch origin ${{ github.event.pull_request.base.ref }}
+          
+      #     # Get file names only (--name-only) and filter for Added, Copied, Modified, Renamed, Type-changed
+      #     FILES=$(git diff --name-only --diff-filter=ACMRT origin/${{ github.event.pull_request.base.ref }} HEAD | xargs)
+          
+      #     echo "files=$FILES" >> $GITHUB_OUTPUT
+    
+      # - name: Use the File Paths
+      #   run: |
+      #     echo "The edited files are: ${{ steps.git-diff.outputs.files }}"
