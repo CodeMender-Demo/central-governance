@@ -4,7 +4,7 @@ on:
 
 jobs:
   dispatch-task:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Trigger task for all repos
         env:
@@ -18,6 +18,6 @@ jobs:
             
             # Triggers the central workflow, passing the target repo name as an input
             gh workflow run codemender-scan.yml \
-              --repo "${{ github.repository_owner }}/.github" \
+              --repo "${{ github.repository_owner }}/central-governance" \
               -f repo_name="$repo" || true
           done
