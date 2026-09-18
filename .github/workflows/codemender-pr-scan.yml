@@ -66,12 +66,12 @@ jobs:
           git config --global user.email "codemender-bot@google.com"
 
       # Add project paths to config.yaml
-      # - name: Update codeMender config
-      #   run: |
-      #     cat >> ~/.codemender/config.yaml << 'EOF'
-      #     project_paths:
-      #       - "/home/runner/work/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}"
-      #     EOF
+      - name: Update codeMender config
+        run: |
+          cat >> ~/.codemender/config.yaml << 'EOF'
+          project_paths:
+            - "/home/runner/work/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}"
+          EOF
       
       # The Core CodeMender Pipeline (Embedded Bash Logic)
       - name: Run CodeMender Scan
@@ -79,14 +79,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -e
-          # echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
-          # # 1. Fetch the files from the API and read them into a Bash array line-by-line
-          # mapfile -t CHANGED_FILES < <(gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename')
+          echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
+          # 1. Fetch the files from the API and read them into a Bash array line-by-line
+          mapfile -t CHANGED_FILES < <(gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename')
 
-          # # 2. Iterate through the list/array
-          # for file in "${CHANGED_FILES[@]}"; do
-          #   echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
-          #   cm find "${{ github.event.pull_request.head.repo.name }}/$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
-          # done
-          cm find ./${{ github.event.pull_request.head.repo.name }} --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
-          
+          # 2. Iterate through the list/array
+          for file in "${CHANGED_FILES[@]}"; do
+            echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
+            cm find "${{ github.event.pull_request.head.repo.name }}/$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
+          done          
