@@ -99,7 +99,6 @@ jobs:
 
           # 2. Iterate through the list/array
           for file in "${CHANGED_FILES[@]}"; do
-            cat ${{ github.event.pull_request.head.repo.name }}/$file
             echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
             cm find "${{ github.event.pull_request.head.repo.name }}/$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
           done
