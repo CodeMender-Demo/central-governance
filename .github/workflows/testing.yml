@@ -5,6 +5,9 @@ on:
 jobs:
   dispatch-task:
     runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
     steps:
       # Authenticate to Google Cloud securely
       - name: Authenticate to Google Cloud
