@@ -37,7 +37,8 @@ jobs:
 
       - name: Explore file system after checkout
         run: |
-          echo ls -Ral
+          FILE_TREE=$(ls -Ral)
+          echo "$FILE_TREE"
       
       - name: Get Changed Files via GitHub API
         env:
