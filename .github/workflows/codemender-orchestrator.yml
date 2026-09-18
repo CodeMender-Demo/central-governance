@@ -5,10 +5,13 @@ on:
 jobs:
   dispatch-task:
     runs-on: ubuntu-22.04
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Trigger task for all repos
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }} 
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
         run: |
           gh api orgs/${{ github.repository_owner }}/repos --paginate --jq '.[].name' | while read repo; do
             # Skip triggering the central .github repo itself to avoid infinite loops
