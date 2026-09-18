@@ -9,8 +9,7 @@ jobs:
       contents: 'read'
       id-token: 'write'
     steps:
-      # Authenticate to Google Cloud securely
       - name: Find where the dir is
         run: |
-          echo "$(pwd)"
-          echo "$(ls)"
+          pwd
+          ls -la
