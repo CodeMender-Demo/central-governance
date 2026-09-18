@@ -116,9 +116,11 @@ jobs:
 
           # 2. Iterate through the list/array
           for file in "${CHANGED_FILES[@]}"; do
-            echo "Current dir: $(pwd)"
-            echo "Listing current dir: $(ls -Rl)"
-            echo "🔍 Scanning ${{ github.event.pull_request.head.repo.full_name }}/$file with Gemini 3.7 Flash..."
+            echo "Changing to home dir"
+            cd
+            echo "Value of file variable: $file"
+
+            echo "🔍 Scanning $file with Gemini 3.7 Flash..."
             cm find "$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
           done
           
