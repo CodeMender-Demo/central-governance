@@ -79,7 +79,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -e
-          echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
           # 1. Fetch the files from the API and read them into a Bash array line-by-line
           mapfile -t CHANGED_FILES < <(gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename')
 
@@ -91,17 +90,13 @@ jobs:
 
       - name: Report
         run: |
+          cm report -f md >> "$GITHUB_STEP_SUMMARY"
           FINDINGS=$(cm report --status OPEN --format json)
           FINDINGS_COUNT=$(echo "$FINDINGS" | jq '. | length')
           if [ "$FINDINGS_COUNT" -gt 0 ]; then
             echo "${FINDINGS_COUNT} findings discovered."
-            echo "## CodeMender Vulnerability Findings Report" >> "$GITHUB_STEP_SUMMARY"
-            cm report -f md >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          fi
-          
-          echo "No vulnerabilities found!" >> "$GITHUB_STEP_SUMMARY"
-          
+          fi          
       
       # Cleanup Sensitive Binaries (Best Practice)
       - name: Cleanup
