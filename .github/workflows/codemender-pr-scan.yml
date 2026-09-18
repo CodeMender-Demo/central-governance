@@ -27,6 +27,13 @@ jobs:
           echo "Repo Full Name: \n\n ${{ github.event.pull_request.head.repo.full_name }}" >> $GITHUB_STEP_SUMMARY
           echo "Title: \n\n ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
       
+      - name: Get Changed Files via GitHub API
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
+          gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename' >> $GITHUB_STEP_SUMMARY
+
       # Needs to be updated before use
       # - name: Checkout Code
       #   uses: actions/checkout@v4
@@ -36,17 +43,4 @@ jobs:
       #     fetch-depth: 0
       #     path: ${{ github.event.pull_request.head.repo.name }}
     
-      - name: Get Changed Files
-        id: git-diff
-        run: |
-          # Fetch the target base branch to ensure git can compare against it
-          git fetch origin ${{ github.event.pull_request.base.ref }}
-          
-          # Get file names only (--name-only) and filter for Added, Copied, Modified, Renamed, Type-changed
-          FILES=$(git diff --name-only --diff-filter=ACMRT origin/${{ github.event.pull_request.base.ref }} HEAD | xargs)
-          
-          echo "files=$FILES" >> $GITHUB_OUTPUT
-    
-      - name: Use the File Paths
-        run: |
-          echo "The edited files are: ${{ steps.git-diff.outputs.files }}" >> $GITHUB_STEP_SUMMARY
+      
