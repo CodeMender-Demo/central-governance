@@ -1,0 +1,23 @@
+name: CodeMender Orchestrator
+on:
+  workflow_dispatch:
+
+jobs:
+  dispatch-task:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger task for all repos
+        env:
+          GH_TOKEN: ${{ secrets.ORG_READ_TOKEN }} 
+        run: |
+          gh api orgs/${{ github.repository_owner }}/repos --paginate --jq '.[].name' | while read repo; do
+            # Skip triggering the central .github repo itself to avoid infinite loops
+            if [ "$repo" = "central-governance" ]; then continue; fi
+            
+            echo "Dispatching CodeMender scan for repository: $repo"
+            
+            # Triggers the central workflow, passing the target repo name as an input
+            gh workflow run codemender-scan.yml \
+              --repo "${{ github.repository_owner }}/.github" \
+              -f repo_name="$repo" || true
+          done
