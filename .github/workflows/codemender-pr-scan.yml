@@ -105,7 +105,7 @@ jobs:
             echo "Listing current directory..."
             ls -la
             echo "CHanging to ${{ github.event.pull_request.head.repo.name }} dir..."
-            cd ${{ github.repository }}
+            cd ${{ github.event.pull_request.head.repo.name }}
             echo "Listing ${{ github.event.pull_request.head.repo.name }} dir..."
             ls -la
             echo "Printing pwd"
