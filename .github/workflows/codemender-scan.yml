@@ -106,11 +106,7 @@ jobs:
           cat codemender_summary.md >> $GITHUB_STEP_SUMMARY
 
           # Export a json report
-          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
-
-          echo "# CodeMender Scan Results: JSON" >> $GITHUB_STEP_SUMMARY
-          cat ./${{ inputs.repo_name }}/codemender_report.json >> $GITHUB_STEP_SUMMARY
-          
+          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json          
 
       - name: Format SARIF Report for GitHub UI
         if: ${{ env.NO_FINDINGS == 'false' }}
