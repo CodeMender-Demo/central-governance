@@ -9,6 +9,9 @@ jobs:
     # Skips execution entirely if the pull request is a draft
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
     steps:
       - name: Run linting or security scanner
         run: |
