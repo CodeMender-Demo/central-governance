@@ -27,58 +27,40 @@ jobs:
           fetch-depth: 0
           path: ${{ github.event.pull_request.head.repo.name }}
 
-      # - name: Explore file system after checkout
-      #   run: |
-      #     FILE_TREE=$(ls -Ral)
-      #     echo "$FILE_TREE"
-      
-      # - name: Get Changed Files via GitHub API
-      #   env:
-      #     GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      #   run: |
-      #     echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
-      #     # 1. Fetch the files from the API and read them into a Bash array line-by-line
-      #     mapfile -t CHANGED_FILES < <(gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename')
-
-      #     # 2. Iterate through the list/array
-      #     for file in "${CHANGED_FILES[@]}"; do
-      #       echo "Processing modified file: $file" >> $GITHUB_STEP_SUMMARY
-      #     done
-
       # Authenticate to Google Cloud securely
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: "${{ secrets.WIF_PROVIDER }}"
-          service_account: "${{ secrets.WIF_SERVICE_ACCOUNT }}"
+      # - name: Authenticate to Google Cloud
+      #   uses: google-github-actions/auth@v2
+      #   with:
+      #     workload_identity_provider: "${{ secrets.WIF_PROVIDER }}"
+      #     service_account: "${{ secrets.WIF_SERVICE_ACCOUNT }}"
 
       # Set up the gcloud CLI
-      - name: Set up Google Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+      # - name: Set up Google Cloud SDK
+      #   uses: google-github-actions/setup-gcloud@v2
 
       # Download and Install CodeMender On-The-Fly
-      - name: Install CodeMender CLI
-        run: |
-          echo "Downloading CodeMender from Artifact Registry..."
-          gcloud artifacts generic download \
-            --project=cmoc-prod \
-            --location=us \
-            --repository=codemender-cli-production \
-            --package=cm \
-            --version=stable \
-            --name=cm-linux-amd64.zip \
-            --destination=./
+      # - name: Install CodeMender CLI
+      #   run: |
+      #     echo "Downloading CodeMender from Artifact Registry..."
+      #     gcloud artifacts generic download \
+      #       --project=cmoc-prod \
+      #       --location=us \
+      #       --repository=codemender-cli-production \
+      #       --package=cm \
+      #       --version=stable \
+      #       --name=cm-linux-amd64.zip \
+      #       --destination=./
             
-          unzip -q cm-linux-amd64.zip
-          chmod +x cm
-          sudo mv cm /usr/local/bin/cm
-          cm --version
+      #     unzip -q cm-linux-amd64.zip
+      #     chmod +x cm
+      #     sudo mv cm /usr/local/bin/cm
+      #     cm --version
 
       # Configure Git Identity for the Bot
-      - name: Configure Git Identity
-        run: |
-          git config --global user.name "CodeMender Scan Bot"
-          git config --global user.email "codemender-bot@google.com"
+      # - name: Configure Git Identity
+      #   run: |
+      #     git config --global user.name "CodeMender Scan Bot"
+      #     git config --global user.email "codemender-bot@google.com"
 
       # The Core CodeMender Pipeline (Embedded Bash Logic)
       - name: Run CodeMender Scan
@@ -88,26 +70,26 @@ jobs:
           set -e
           echo "🚀 Starting CodeMender Scan..."
 
-          # Initialize Workspace
-          cm init
+          # # Initialize Workspace
+          # cm init
 
-          # config.yaml updates
-          cat <<EOF > ~/.codemender/config.yaml
-          project_paths:
-            - "~/${{ github.event.pull_request.head.repo.full_name }}"
-          vcs:
-            type: "git"
-            commands:
-              reset: "git checkout HEAD -- ."
-          build:
-            command: "echo 'Skipping tests for demo purposes' && true"
-          scan:
-            extensions:
-              include: [".js", ".ts", ".html", ".css", ".json", ".yaml", ".csproj", ".cs", ".razor"]
-          tools:
-            confirm_commands: false
-            confirm_writes: false
-          EOF
+          # # config.yaml updates
+          # cat <<EOF > ~/.codemender/config.yaml
+          # project_paths:
+          #   - "~/${{ github.event.pull_request.head.repo.full_name }}"
+          # vcs:
+          #   type: "git"
+          #   commands:
+          #     reset: "git checkout HEAD -- ."
+          # build:
+          #   command: "echo 'Skipping tests for demo purposes' && true"
+          # scan:
+          #   extensions:
+          #     include: [".js", ".ts", ".html", ".css", ".json", ".yaml", ".csproj", ".cs", ".razor"]
+          # tools:
+          #   confirm_commands: false
+          #   confirm_writes: false
+          # EOF
 
           # Scan Phase
           echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
@@ -118,9 +100,11 @@ jobs:
           for file in "${CHANGED_FILES[@]}"; do
             echo "Changing to home dir"
             cd
+            echo "Listing home directory tree..."
+            echo "$(ls -Rl)"
             echo "Value of file variable: $file"
 
-            echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
-            cm find "${{ github.event.pull_request.head.repo.name }}/$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
+            # echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
+            # cm find "${{ github.event.pull_request.head.repo.name }}/$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
           done
           
