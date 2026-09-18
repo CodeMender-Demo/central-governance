@@ -104,10 +104,12 @@ jobs:
             pwd
             echo "Listing current directory..."
             ls -la
-            echo "CHanging to ${{ github.repository }} dir..."
+            echo "CHanging to ${{ github.event.pull_request.head.repo.name }} dir..."
             cd ${{ github.repository }}
-            echo "Listing ${{ github.repository }} dir..."
+            echo "Listing ${{ github.event.pull_request.head.repo.name }} dir..."
             ls -la
+            echo "Printing pwd"
+            pwd
             
             echo "Value of file variable: $file"
 
