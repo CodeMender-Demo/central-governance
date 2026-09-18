@@ -1,0 +1,14 @@
+name: test
+on:
+  workflow_dispatch:
+
+jobs:
+  dispatch-task:
+    runs-on: ubuntu-latest
+    steps:
+      # Authenticate to Google Cloud securely
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "${{ secrets.WIF_PROVIDER }}"
+          service_account: "${{ secrets.WIF_SERVICE_ACCOUNT }}"
