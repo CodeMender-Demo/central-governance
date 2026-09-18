@@ -94,5 +94,5 @@ jobs:
           sarif_file: 'mock-output.sarif'
           checkout_path: '${{ github.workspace }}/cm-python-sample'
           repository: 'CodeMender-Demo/cm-python-sample'
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
           tool_name: 'CodeMender'
