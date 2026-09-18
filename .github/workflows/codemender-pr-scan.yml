@@ -120,7 +120,7 @@ jobs:
             cd
             echo "Value of file variable: $file"
 
-            echo "🔍 Scanning $file with Gemini 3.7 Flash..."
-            cm find "$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
+            echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
+            cm find "${{ github.event.pull_request.head.repo.name }}/$file" --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
           done
           
