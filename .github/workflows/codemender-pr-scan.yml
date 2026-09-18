@@ -8,7 +8,7 @@ jobs:
     name: Mandatory CodeMender Scan
     # Skips execution entirely if the pull request is a draft
     if: github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -56,6 +56,8 @@ jobs:
           chmod +x cm
           sudo mv cm /usr/local/bin/cm
           cm --version
+          # Initialize Workspace
+          cm init
 
       # Configure Git Identity for the Bot
       - name: Configure Git Identity
@@ -63,36 +65,20 @@ jobs:
           git config --global user.name "CodeMender Scan Bot"
           git config --global user.email "codemender-bot@google.com"
 
+      # Add project paths to config.yaml
+      # - name: Update codeMender config
+      #   run: |
+      #     cat >> ~/.codemender/config.yaml << 'EOF'
+      #     project_paths:
+      #       - "/home/runner/work/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}"
+      #     EOF
+      
       # The Core CodeMender Pipeline (Embedded Bash Logic)
       - name: Run CodeMender Scan
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           set -e
-          echo "🚀 Starting CodeMender Scan..."
-
-          # Initialize Workspace
-          cm init
-
-          # config.yaml updates
-          # cat <<EOF > ~/.codemender/config.yaml
-          # project_paths:
-          #   - "/home/runner/work/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}/${{ github.event.pull_request.head.repo.name }}"
-          # vcs:
-          #   type: "git"
-          #   commands:
-          #     reset: "git checkout HEAD -- ."
-          # build:
-          #   command: ""
-          # scan:
-          #   extensions:
-          #     include: [".py", ".java", ".go", ".js", ".ts", ".c", ".cc", ".cpp", ".h", ".rb", ".php"]
-          # tools:
-          #   confirm_commands: false
-          #   confirm_writes: false
-          # EOF
-
-          # Scan Phase
           # echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
           # # 1. Fetch the files from the API and read them into a Bash array line-by-line
           # mapfile -t CHANGED_FILES < <(gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename')
