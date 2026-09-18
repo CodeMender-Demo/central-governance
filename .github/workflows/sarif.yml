@@ -17,7 +17,7 @@ jobs:
         with:
           repository: 'CodeMender-Demo/cm-python-sample'
           path: 'cm-python-sample'
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
 
       # 2. Generate a valid minimal dummy SARIF payload file
       - name: Generate Mock SARIF File
