@@ -98,10 +98,12 @@ jobs:
 
           # 2. Iterate through the list/array
           for file in "${CHANGED_FILES[@]}"; do
-            echo "Changing to home dir"
-            cd
-            echo "Listing home directory tree..."
-            echo "$(ls -Rl)"
+            # echo "Changing to home dir"
+            # cd
+            echo "Current directory"
+            pwd
+            echo "Listing current directory..."
+            ls -la
             echo "Value of file variable: $file"
 
             # echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
