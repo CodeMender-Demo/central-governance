@@ -104,6 +104,11 @@ jobs:
             pwd
             echo "Listing current directory..."
             ls -la
+            echo "CHanging to ${{ github.repository }} dir..."
+            cd ${{ github.repository }}
+            echo "Listing ${{ github.repository }} dir..."
+            ls -la
+            
             echo "Value of file variable: $file"
 
             # echo "🔍 Scanning ${{ github.event.pull_request.head.repo.name }}/$file with Gemini 3.7 Flash..."
