@@ -83,10 +83,10 @@ jobs:
             commands:
               reset: "git checkout HEAD -- ."
           build:
-            command: "echo 'Skipping tests for demo purposes' && true"
+            command: ""
           scan:
             extensions:
-              include: [".js", ".ts", ".html", ".css", ".json", ".yaml", ".csproj", ".cs", ".razor"]
+              include: [".py", ".java", ".go", ".js", ".ts", ".c", ".cc", ".cpp", ".h", ".rb", ".php"]
           tools:
             confirm_commands: false
             confirm_writes: false
