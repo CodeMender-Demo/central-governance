@@ -2,6 +2,7 @@ name: CodeMender PR Scan
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
   compliance-check:
@@ -15,9 +16,9 @@ jobs:
     steps:
       - name: Run linting or security scanner
         run: |
-          echo "## CodeMender scan for for repo: ${{ github.event.pull_request.head.repo.full_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Triggered by PR action:** ${{ github.event.action }}" >> $GITHUB_STEP_SUMMARY
-          echo "**PR Title:** ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **CodeMender scan for for repo:** ${{ github.event.pull_request.head.repo.full_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **Triggered by PR action:** ${{ github.event.action }}" >> $GITHUB_STEP_SUMMARY
+          echo "* **PR Title:** ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
 
       - name: Checkout PR Branch
         uses: actions/checkout@v4
