@@ -32,7 +32,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           echo "### Listing changed files..." >> $GITHUB_STEP_SUMMARY
-          gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename' >> $GITHUB_STEP_SUMMARY
+          # 1. Fetch the files from the API and read them into a Bash array line-by-line
+          mapfile -t CHANGED_FILES < <(gh api repos/${{ github.repository }}/pulls/${{ github.event.number }}/files --jq '.[].filename')
+
+          # 2. Iterate through the list/array
+          for file in "${CHANGED_FILES[@]}"; do
+            echo "Processing modified file: $file"
+          done
 
       # Needs to be updated before use
       # - name: Checkout Code
