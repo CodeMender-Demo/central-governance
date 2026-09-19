@@ -85,7 +85,7 @@ jobs:
 
       # 4. Upload the SARIF payload using the RUNTIME env variables mapping
       - name: Upload SARIF payload via official Engine
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         env:
           # This forces GitHub Actions to read the values dynamically during runtime execution
           INPUT_COMMIT_SHA: ${{ env.TARGET_COMMIT_SHA }}
