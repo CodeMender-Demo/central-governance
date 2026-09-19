@@ -217,7 +217,7 @@ jobs:
           }
 
           # Save corrected SARIF
-          with open("output.sarif", "w") as f:
+          with open(${{ github.workspace }}/${{ inputs.repo_name }}/output.sarif, "w") as f:
               f.write(json.dumps(sarif_output, indent=2))
               print(json.dumps(sarif_output, indent=2))'
 
@@ -235,19 +235,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           # Encode the file
-          cat ${{ github.workspace }}/cm-python-sample/results.sarif
-          SARIF_GZ_B64=$(gzip -c ${{ github.workspace }}/cm-python-sample/results.sarif | base64 -w 0)
+          cat ${{ github.workspace }}/${{ inputs.repo_name }}/output.sarif
+          SARIF_GZ_B64=$(gzip -c ${{ github.workspace }}/${{ inputs.repo_name }}/output.sarif | base64 -w 0)
           
           # Send the API command directly using the gh helper tool
           gh api \
             --method POST \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            /repos/CodeMender-Demo/cm-python-sample/code-scanning/sarifs \
+            /repos/${{ github.repository_owner }}/${{ inputs.repo_name }}/code-scanning/sarifs \
             -f sarif="$SARIF_GZ_B64" \
             -f ref="${{ steps.extract_meta.outputs.ref }}" \
             -f commit_sha="${{ steps.extract_meta.outputs.sha }}" \
-            -f tool_name="CodeMender"
+            -f tool_name="Google CodeMender"
 
       # Cleanup Sensitive Binaries (Best Practice)
       - name: Cleanup
