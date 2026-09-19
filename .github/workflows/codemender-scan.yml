@@ -206,7 +206,7 @@ jobs:
                   {
                       "tool": {
                           "driver": {
-                              "name": "CodeMender",
+                              "name": "Google CodeMender",
                               "version": "0.8.0",
                               "rules": rules
                           }
@@ -217,7 +217,7 @@ jobs:
           }
 
           # Save corrected SARIF
-          with open(${{ github.workspace }}/${{ inputs.repo_name }}/output.sarif, "w") as f:
+          with open("${{ github.workspace }}/${{ inputs.repo_name }}/output.sarif", "w") as f:
               f.write(json.dumps(sarif_output, indent=2))
               print(json.dumps(sarif_output, indent=2))'
 
