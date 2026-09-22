@@ -50,6 +50,6 @@ jobs:
 
       - name: Read JSON and Print Finding IDs
         env:
-          RAW_JSON: \${{ steps.generate_json.outputs.json_data }}
+          RAW_JSON: ${{ steps.generate_json.outputs.json_data }}
         run: |
-          echo "\$RAW_JSON" | jq -r '.[].finding_id'
+          echo "$RAW_JSON" | jq -r '.[].finding_id'
