@@ -108,7 +108,8 @@ jobs:
       - name: Export JSON Report
         id: export_json_report
         run: |
-          echo cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
+          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
+          cat ./${{ inputs.repo_name }}/codemender_report.json
 
       - name: Verify Findings
         id: verify_findings
@@ -119,7 +120,8 @@ jobs:
           done < <(jq -r '.[] | .finding_id' ./${{ inputs.repo_name }}/codemender_report.json)
 
           # Update the JSON Report
-          echo cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
+          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
+          cat ./${{ inputs.repo_name }}/codemender_report.json
 
       - name: Format SARIF Report for GitHub UI
         run: |
