@@ -48,7 +48,7 @@ jobs:
           # ]
           # EOF
           # echo "JSON_END" >> $GITHUB_OUTPUT
-          echo "[{'finding_id: '123456'}, {'finding_id: '654123'}]" >> $GITHUB_OUTPUT
+          echo 'json_data=[{"finding_id": "123456"}, {"finding_id": "654123"}]' >> $GITHUB_OUTPUT
 
       - name: Read JSON and Print Finding IDs
         env:
