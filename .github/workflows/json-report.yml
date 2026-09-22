@@ -1,0 +1,52 @@
+name: Test Parse JSON Report
+on:
+  workflow_dispatch:
+
+jobs:
+  dispatch-task:
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Write JSON file
+        id: generate_json
+        run: |
+          cat >> report.json << 'EOF'
+          [
+            {
+              "finding_id": "94362618-99b0-507c-b623-fb1046926ae4",
+              "session_id": "ChA4NWUwOTAwYTM2YTZkZmNlEAgaATAqBG1haW4",
+              "title": "Code Injection in BenchmarkTest00074 via Dynamic Execution",
+              "file_path": "/home/admin_adamhlevy_altostrat_com/BenchmarkPython/testcode/BenchmarkTest00074.py",
+              "severity": "CRITICAL",
+              "confidence": 100,
+              "analysis": "In BenchmarkTest00074.py, the HTTP POST handler for '/benchmark/codeinj-00/BenchmarkTest00074' reads user-controlled input from the 'BenchmarkTest00074' cookie via request.cookies.get(). The input is URL-decoded with urllib.parse.unquote_plus() and inserted into a configparser.ConfigParser instance under section 'section90091', key 'keyB-90091'. It is subsequently retrieved without sanitization or validation and passed directly to Python's dynamic code evaluation function exec(bar). An attacker can inject arbitrary Python statements in the cookie, resulting in Remote Code Execution in the context of the running application process.",
+              "snippet": "\t\t\texec(bar)",
+              "vuln_type": "Code Injection",
+              "vuln_id": "CWE-94",
+              "status": "FIXED",
+              "start_line": 51,
+              "end_line": 51
+            },
+            {
+              "finding_id": "457112e8-9ca6-5057-8807-3d87eee9b6f2",
+              "session_id": "ChA4NWUwOTAwYTM2YTZkZmNlEAgaATAqBG1haW4",
+              "title": "Insecure Deserialization in BenchmarkTest00078 via Unsafe Pickle Loads",
+              "file_path": "/home/admin_adamhlevy_altostrat_com/BenchmarkPython/testcode/BenchmarkTest00078.py",
+              "severity": "CRITICAL",
+              "confidence": 100,
+              "analysis": "- Source: Untrusted user input enters via cookie 'BenchmarkTest00078' via `request.cookies.get(\"BenchmarkTest00078\")`.\n- Sanitization/Validation: The string is wrapped with prefix 'help' and suffix 'snapes on a plane', then sliced with `string9895[4:-17]` which exactly recovers the attacker-controlled input string without any validation.\n- Sink: The unsanitized payload is passed to `pickle.loads(base64.urlsafe_b64decode(bar))` allowing arbitrary object deserialization and remote code execution.\n\nConceptual Exploit Payload:\nPOST /benchmark/deserialization-00/BenchmarkTest00078 HTTP/1.1\nCookie: BenchmarkTest00078=gASVYAAAAAAAAACMBXBvc2l4lIwGc3lzdGVtlJOUjAJpZJSTlIWUUpQu",
+              "snippet": "\t\t\tunpickled = pickle.loads(base64.urlsafe_b64decode(bar))",
+              "vuln_type": "Insecure Deserialization",
+              "vuln_id": "CWE-502",
+              "status": "OPEN",
+              "start_line": 53,
+              "end_line": 53
+            }
+          ]
+          EOF >> $GITHUB_OUTPUT
+
+      - name: Read JSON
+        run: |
+          echo "${{ steps.generate_json }}"
