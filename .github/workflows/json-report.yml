@@ -12,8 +12,8 @@ jobs:
       - name: Write JSON file
         id: generate_json
         run: |
-          echo "json_data<<EOF" >> "\$GITHUB_OUTPUT"
-          cat << 'EOF' >> "\$GITHUB_OUTPUT"
+          echo "json_data< <EOF" >> "$GITHUB_OUTPUT"
+          cat << 'EOF' >> "$GITHUB_OUTPUT"
           [
             {
               "finding_id": "94362618-99b0-507c-b623-fb1046926ae4",
