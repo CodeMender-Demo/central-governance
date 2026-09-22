@@ -12,7 +12,7 @@ jobs:
       - name: Write JSON file
         id: generate_json
         run: |
-          echo "json_data<<EOF" >> $GITHUB_OUTPUT
+          echo "json_data<<JSON_END" >> $GITHUB_OUTPUT
           cat << 'EOF' >> $GITHUB_OUTPUT
           [
             {
@@ -47,6 +47,7 @@ jobs:
             }
           ]
           EOF
+          echo "JSON_END" >> $GITHUB_OUTPUT
 
       - name: Read JSON and Print Finding IDs
         env:
