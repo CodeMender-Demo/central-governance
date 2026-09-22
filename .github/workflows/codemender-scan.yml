@@ -38,7 +38,7 @@ jobs:
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      # Download and Install CodeMender On-The-Fly
+      # Download and Install CodeMender On-The-Fly. Ensures that the latest binary is used
       - name: Install CodeMender CLI
         run: |
           echo "Downloading CodeMender from Artifact Registry..."
@@ -69,22 +69,22 @@ jobs:
         run: |
           set -e
 
-          echo "🔍 Scanning codebase with Gemini 3.7 Flash..."
+          echo "🔍 Scanning codebase..."
           cm find ./${{ inputs.repo_name }} --model gemini-3.7-flash -y 2>&1 | tee scan_output.log
-
+      
+      - name: Check for Findings
+        id: check_findings
+        run: |
           # Query Findings
           FINDINGS=$(cm report --status OPEN --format json)
           FINDINGS_COUNT=$(echo "$FINDINGS" | jq '. | length')
-          echo "NO_FINDINGS=false" >> "$GITHUB_ENV"
 
           if [ "$FINDINGS_COUNT" -eq 0 ]; then
             echo "🎉 Success! No open vulnerabilities found."
-            echo "NO_FINDINGS=true" >> "$GITHUB_ENV"
             exit 0
           fi
 
           echo "⚠️ Found $FINDINGS_COUNT open findings."
-          echo "NO_FINDINGS=false" >> "$GITHUB_ENV"
 
       # Generate and Publish the Report
       - name: Generate Security Report
@@ -105,11 +105,23 @@ jobs:
           echo "# CodeMender Scan Results" >> $GITHUB_STEP_SUMMARY
           cat codemender_summary.md >> $GITHUB_STEP_SUMMARY
 
-          # Export a json report
-          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json          
+      - name: Export JSON Report
+        id: export_json_report
+        run: |
+          echo cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
+
+      - name: Verify Findings
+        id: verify_findings
+        run: |
+          while read -r finding_id; do
+              echo "Running cm verify command for ID: $id"
+              cm verify $id --bypass-warning=true -y
+          done < <(jq -r '.[] | .id' ./${{ inputs.repo_name }}/codemender_report.json)
+
+          # Update the JSON Report
+          echo cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
 
       - name: Format SARIF Report for GitHub UI
-        if: ${{ env.NO_FINDINGS == 'false' }}
         run: |
           python3 -c '
           import json, re, os
