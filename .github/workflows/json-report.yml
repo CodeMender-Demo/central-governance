@@ -54,7 +54,7 @@ jobs:
         env:
           RAW_JSON: ${{ steps.generate_json.outputs.json_data }}
         run: |
-          echo "$RAW_JSON" | jq -r '.[].finding_id 2>&1 | sed "s/^/[ID: {}] "'
+          echo "$RAW_JSON" | jq -r '.[].finding_id'
 
 
       - name: Verify Findings
@@ -64,4 +64,4 @@ jobs:
         run: |
           # Extract IDs and pipe them to xargs to run up to 10 verifications concurrently
           echo "$RAW_JSON" | jq -r '.[].finding_id' | \
-          xargs -I {} -P 10 sh -c 'echo "Running cm verify command for ID: {}"'
+          xargs -I {} -P 10 sh -c 'echo "Running cm verify command for ID: {}" 2>&1 | sed "s/^/[ID: {}] "'
