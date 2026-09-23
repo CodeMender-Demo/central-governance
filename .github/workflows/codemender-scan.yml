@@ -114,10 +114,13 @@ jobs:
       - name: Verify Findings
         id: verify_findings
         run: |
-          while read -r id; do
-              echo "Running cm verify command for ID: $id"
-              cm verify $id --bypass-warning=true -y
-          done < <(jq -r '.[] | .finding_id' ./${{ inputs.repo_name }}/codemender_report.json)
+          # while read -r id; do
+          #     echo "Running cm verify command for ID: $id"
+          #     cm verify $id --bypass-warning=true -y
+          # done < <(jq -r '.[] | .finding_id' ./${{ inputs.repo_name }}/codemender_report.json)
+
+          jq -r '.[] | .finding_id' ./${{ inputs.repo_name }}/codemender_report.json | \
+          xargs -I {} -P 5 sh -c 'echo "Running cm verify command for ID: {}"; cm verify {} --bypass-warning=true -y'
 
           # Update the JSON Report
           cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
