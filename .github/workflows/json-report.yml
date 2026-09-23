@@ -54,7 +54,7 @@ jobs:
         env:
           RAW_JSON: ${{ steps.generate_json.outputs.json_data }}
         run: |
-          echo "$RAW_JSON" | jq -r '.[].finding_id 2>&1 | sed "s/^/[ID: {}] /"''
+          echo "$RAW_JSON" | jq -r '.[].finding_id 2>&1 | sed "s/^/[ID: {}] /"'
 
 
       - name: Verify Findings
