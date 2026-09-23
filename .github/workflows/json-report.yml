@@ -64,4 +64,4 @@ jobs:
         run: |
           # Extract IDs and pipe them to xargs to run up to 10 verifications concurrently
           jq -r '.[] | .finding_id' $RAW_JSON | \
-          xargs -I {} -P 10 sh -c 'echo "Running cm verify command for ID: {}";
+          xargs -I {} -P 10 sh -c 'echo "Running cm verify command for ID: {}"'
