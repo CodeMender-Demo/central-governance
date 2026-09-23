@@ -48,10 +48,20 @@ jobs:
           # ]
           # EOF
           # echo "JSON_END" >> $GITHUB_OUTPUT
-          echo 'json_data=[{"finding_id": "123456"}, {"finding_id": "654123"}]' >> $GITHUB_OUTPUT
+          echo 'json_data=[{"finding_id": "123456"}, {"finding_id": "654123"}, {"finding_id": "153957"}]' >> $GITHUB_OUTPUT
 
       - name: Read JSON and Print Finding IDs
         env:
           RAW_JSON: ${{ steps.generate_json.outputs.json_data }}
         run: |
           echo "$RAW_JSON" | jq -r '.[].finding_id'
+
+
+      - name: Verify Findings
+        id: verify_findings
+        env:
+          RAW_JSON: ${{ steps.generate_json.outputs.json_data }}
+        run: |
+          # Extract IDs and pipe them to xargs to run up to 10 verifications concurrently
+          jq -r '.[] | .finding_id' $RAW_JSON | \
+          xargs -I {} -P 10 sh -c 'echo "Running cm verify command for ID: {}";
