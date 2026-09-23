@@ -219,7 +219,7 @@ jobs:
                       "tool": {
                           "driver": {
                               "name": "Google CodeMender",
-                              "version": "0.8.0",
+                              "version": "public preview",
                               "rules": rules
                           }
                       },
