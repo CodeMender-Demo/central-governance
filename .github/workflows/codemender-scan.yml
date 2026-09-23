@@ -244,7 +244,6 @@ jobs:
       
       # Upload the SARIF payload directly to the target repository using the GitHub CLI
       - name: Upload SARIF directly via GitHub CLI
-        if: env.NO_FINDINGS == 'false'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
