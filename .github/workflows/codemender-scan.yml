@@ -10,7 +10,7 @@ on:
 jobs:
   codemender-scan:
     runs-on: ubuntu-22.04
-
+    timeout-minutes: 120
     permissions:
       contents: write
       pull-requests: write
@@ -99,7 +99,8 @@ jobs:
           jq -r '.[] | .finding_id' ./${{ inputs.repo_name }}/codemender_report.json | \
           xargs -I {} -P 10 sh -c 'echo "Running cm verify command for ID: {}"; cm verify {} --bypass-warning=true -y 2>&1 | sed "s/^/[ID: {}] /"'
 
-          # Update the JSON Report
+      - name: Update the JSON Report
+        run: |
           cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
           cat ./${{ inputs.repo_name }}/codemender_report.json
 
