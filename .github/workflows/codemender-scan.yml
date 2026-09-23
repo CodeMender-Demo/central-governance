@@ -86,6 +86,22 @@ jobs:
 
           echo "⚠️ Found $FINDINGS_COUNT open findings."
 
+      - name: Export JSON Report
+        id: export_json_report
+        run: |
+          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
+          cat ./${{ inputs.repo_name }}/codemender_report.json
+
+      - name: Verify Findings
+        id: verify_findings
+        run: |
+          jq -r '.[] | .finding_id' ./${{ inputs.repo_name }}/codemender_report.json | \
+          xargs -I {} -P 10 sh -c 'echo "Running cm verify command for ID: {}"; cm verify {} --bypass-warning=true -y 2>&1 | sed "s/^/[ID: {}] /"'
+
+          # Update the JSON Report
+          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
+          cat ./${{ inputs.repo_name }}/codemender_report.json
+
       # Generate and Publish the Report
       - name: Generate Security Report
         run: |
@@ -104,22 +120,6 @@ jobs:
 
           echo "# CodeMender Scan Results" >> $GITHUB_STEP_SUMMARY
           cat codemender_summary.md >> $GITHUB_STEP_SUMMARY
-
-      - name: Export JSON Report
-        id: export_json_report
-        run: |
-          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
-          cat ./${{ inputs.repo_name }}/codemender_report.json
-
-      - name: Verify Findings
-        id: verify_findings
-        run: |
-          jq -r '.[] | .finding_id' ./${{ inputs.repo_name }}/codemender_report.json | \
-          xargs -I {} -P 5 sh -c 'echo "Running cm verify command for ID: {}"; cm verify {} --bypass-warning=true -y 2>&1 | sed "s/^/[ID: {}] /"'
-
-          # Update the JSON Report
-          cm report --format json > ./${{ inputs.repo_name }}/codemender_report.json
-          cat ./${{ inputs.repo_name }}/codemender_report.json
 
       - name: Format SARIF Report for GitHub UI
         run: |
