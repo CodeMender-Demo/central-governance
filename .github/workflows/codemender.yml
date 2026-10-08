@@ -65,8 +65,8 @@ jobs:
 
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ inputs.wif_provider }}
-          service_account: ${{ inputs.wif_service_account }}
+          workload_identity_provider: ${{ secrets.wif_provider }}
+          service_account: ${{ secrets.wif_service_account }}
 
       - name: Install CodeMender CLI
         run: |
@@ -212,9 +212,8 @@ jobs:
 
       - uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ inputs.wif_provider }}
-          service_account: ${{ inputs.wif_service_account }}
+          workload_identity_provider: ${{ secrets.wif_provider }}
+          service_account: ${{ secrets.wif_service_account }}
 
       - name: Install CodeMender CLI
         run: |
