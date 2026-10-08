@@ -11,13 +11,13 @@ on:
       shards:
         description: 'Number of parallel runners for Deep Scan'
         required: false
-        default: '15'
+        default: '30'
   workflow_call:
     inputs:
       shards:
         required: false
         type: string
-        default: '20'
+        default: '30'
     secrets:
       wif_provider:
           required: true
@@ -171,13 +171,13 @@ jobs:
     name: Scan Shard ${{ matrix.shard.id }} (${{ matrix.shard.file_count }} files)
     needs: prepare-shards
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
     strategy:
       fail-fast: false
-      max-parallel: 15
+      max-parallel: 5
       matrix:
         shard: ${{ fromJson(needs.prepare-shards.outputs.matrix) }}
     steps:
