@@ -19,7 +19,11 @@ on:
         type: string
         default: '20'
 
-permissions: {}
+permissions:
+    contents: read
+    id-token: write
+    pull-requests: write
+    security-events: write
 
 defaults:
   run:
