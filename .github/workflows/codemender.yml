@@ -12,6 +12,12 @@ on:
         description: 'Number of parallel runners for Deep Scan'
         required: false
         default: '20'
+  workflow_call:
+    inputs:
+      shards:
+        required: false
+        type: string
+        default: '20'
 
 permissions: {}
 
