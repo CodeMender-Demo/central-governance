@@ -115,7 +115,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Partition files into balanced directory shards
+      - name: Partition files evenly across shards
         id: shard
         env:
           NUM_SHARDS: ${{ inputs.shards || '20' }}
@@ -124,7 +124,6 @@ jobs:
           import json, os, pathlib
 
           num_shards = int(os.environ.get("NUM_SHARDS", "20"))
-          max_files_per_unit = 200
 
           include_exts = {
               ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
@@ -132,57 +131,34 @@ jobs:
               ".cs", ".rs", ".kt", ".kts", ".rb", ".php"
           }
           exclude_dirs = {
-              ".git", ".github", ".codemender", ".cm_project",
+              ".git", ".github", ".codemender", ".cm_project", ".cm_shard",
               "node_modules", "vendor", "dist", "bin", "target", "obj",
               "build", ".gradle", "test", "tests", "__tests__", "spec",
               "mocks", "fixtures", "docs", "examples", "migrations", "third_party"
           }
 
-          # Map each directory to its direct scannable files
-          dir_direct_files = {}
+          # Collect every scannable file and its byte size
+          all_files = []
           for root, dirs, files in os.walk("."):
               dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
-              count = sum(1 for f in files if pathlib.Path(f).suffix in include_exts)
-              if count > 0:
-                  rel = os.path.relpath(root, ".")
-                  dir_direct_files[rel] = count
+              for f in files:
+                  if pathlib.Path(f).suffix in include_exts:
+                      rel_path = os.path.relpath(os.path.join(root, f), ".")
+                      size = max(1, os.path.getsize(rel_path))
+                      all_files.append((rel_path, size))
 
-          # Subdivide directories so no single scan unit exceeds max_files_per_unit
-          # unless the files are directly inside that single directory
-          def collect_units(path):
-              subdirs = [
-                  d for d in dir_direct_files
-                  if d != path and (path == "." or d.startswith(path + "/"))
-              ]
-              total = dir_direct_files.get(path, 0) + sum(dir_direct_files[d] for d in subdirs)
-              if total == 0:
-                  return []
-              if total <= max_files_per_unit or not subdirs:
-                  return [(path, total, False)]
-              # Split into immediate children + direct files in current dir
-              units = []
-              if dir_direct_files.get(path, 0) > 0:
-                  units.append((path, dir_direct_files[path], True))
-              immediate_children = sorted({
-                  d.split("/")[0] if path == "." else path + "/" + d[len(path)+1:].split("/")[0]
-                  for d in subdirs
-              })
-              for child in immediate_children:
-                  units.extend(collect_units(child))
-              return units
+          # Sort largest files first (LPT) and distribute across N shards
+          all_files.sort(key=lambda x: x[1], reverse=True)
+          shards = [{"id": i, "file_count": 0, "byte_weight": 0} for i in range(num_shards)]
 
-          units = collect_units(".")
-          units.sort(key=lambda x: x[1], reverse=True)
+          for _, size in all_files:
+              # Pick shard with fewest files (tie-break by byte_weight)
+              target = min(shards, key=lambda s: (s["file_count"], s["byte_weight"]))
+              target["file_count"] += 1
+              target["byte_weight"] += size
 
-          # Greedy LPT bin-packing across N shards
-          shards = [{"id": i, "weight": 0, "targets": []} for i in range(num_shards)]
-          for path, weight, direct_only in units:
-              lightest = min(shards, key=lambda s: s["weight"])
-              lightest["targets"].append({"path": path, "direct_only": direct_only})
-              lightest["weight"] += weight
-
-          active_shards = [s for s in shards if s["targets"]]
-          print(f"Created {len(active_shards)} shards. Weights: {[s['weight'] for s in active_shards]}")
+          active_shards = [{"id": s["id"], "file_count": s["file_count"]} for s in shards if s["file_count"] > 0]
+          print(f"Created {len(active_shards)} shards. File counts: {[s['file_count'] for s in active_shards]}")
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"matrix={json.dumps(active_shards)}\n")
@@ -222,15 +198,64 @@ jobs:
           chmod +x "$RUNNER_TEMP/cm/cm"
           echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
 
-      - name: Configure CodeMender & Run Sharded Deep Scan
+      - name: Build Hardlinked Shard Tree & Run Deep Scan
         env:
-          SHARD_TARGETS: ${{ toJson(matrix.shard.targets) }}
+          SHARD_ID: ${{ matrix.shard.id }}
+          NUM_SHARDS: ${{ inputs.shards || '20' }}
           CM_TELEMETRY_OPT_OUT: "1"
         run: |
-          cm init
+          # Deterministically materialize this shard's ~139 files into .cm_shard/
+          # subdivided into batches of 50 files for optimal CodeMender performance
+          python3 - << 'EOF'
+          import os, pathlib
 
-          # Base config: grant read access to full repo for cross-file validation
-          # while pruning non-production directories
+          shard_id = int(os.environ["SHARD_ID"])
+          num_shards = int(os.environ.get("NUM_SHARDS", "20"))
+          batch_size = 50
+
+          include_exts = {
+              ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
+              ".ts", ".tsx", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+              ".cs", ".rs", ".kt", ".kts", ".rb", ".php"
+          }
+          exclude_dirs = {
+              ".git", ".github", ".codemender", ".cm_project", ".cm_shard",
+              "node_modules", "vendor", "dist", "bin", "target", "obj",
+              "build", ".gradle", "test", "tests", "__tests__", "spec",
+              "mocks", "fixtures", "docs", "examples", "migrations", "third_party"
+          }
+
+          all_files = []
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+              for f in files:
+                  if pathlib.Path(f).suffix in include_exts:
+                      rel_path = os.path.relpath(os.path.join(root, f), ".")
+                      size = max(1, os.path.getsize(rel_path))
+                      all_files.append((rel_path, size))
+
+          all_files.sort(key=lambda x: x[1], reverse=True)
+          shards = [{"id": i, "file_count": 0, "byte_weight": 0, "files": []} for i in range(num_shards)]
+
+          for rel_path, size in all_files:
+              target = min(shards, key=lambda s: (s["file_count"], s["byte_weight"]))
+              target["file_count"] += 1
+              target["byte_weight"] += size
+              target["files"].append(rel_path)
+
+          my_files = shards[shard_id]["files"]
+          for idx, rel_path in enumerate(my_files):
+              batch_dir = os.path.join(".cm_shard", f"batch_{idx // batch_size}", os.path.dirname(rel_path))
+              os.makedirs(batch_dir, exist_ok=True)
+              os.link(rel_path, os.path.join(batch_dir, os.path.basename(rel_path)))
+
+          print(f"Shard {shard_id}: linked {len(my_files)} files across {(len(my_files) - 1) // batch_size + 1} batches.")
+          EOF
+
+          # Keep .cm_shard out of git status
+          printf '%s\n' .cm_shard .cm_project >> .git/info/exclude
+
+          cm init
           cat <<EOF > ~/.codemender/config.yaml
           model: "$CM_MODEL"
           human_confirmation: false
@@ -239,43 +264,12 @@ jobs:
             - "$GITHUB_WORKSPACE"
           sandbox:
             enabled: false
-          scan:
-            exclude_dirs:
-              - node_modules
-              - vendor
-              - dist
-              - bin
-              - target
-              - obj
-              - build
-              - .gradle
-              - test
-              - tests
-              - __tests__
-              - spec
-              - mocks
-              - fixtures
-              - docs
-              - examples
-              - migrations
-              - third_party
           EOF
 
-          cp ~/.codemender/config.yaml "$RUNNER_TEMP/base-config.yaml"
-
-          # Scan each directory assigned to this shard
-          echo "$SHARD_TARGETS" | jq -c '.[]' | while read -r item; do
-            target_path=$(echo "$item" | jq -r '.path')
-            direct_only=$(echo "$item" | jq -r '.direct_only')
-
-            cp "$RUNNER_TEMP/base-config.yaml" ~/.codemender/config.yaml
-            if [ "$direct_only" = "true" ]; then
-              # Exclude immediate subdirectories because another shard owns them
-              find "$target_path" -mindepth 1 -maxdepth 1 -type d -printf "    - %f\n" >> ~/.codemender/config.yaml
-            fi
-
-            echo "=== Deep scanning $target_path (direct_only=$direct_only) ==="
-            cm find "$target_path" \
+          # Scan each 50-file batch in this shard with 16 workers
+          for batch in .cm_shard/batch_*; do
+            echo "=== Scanning $batch ==="
+            cm find "$batch" \
               --deep \
               --deep-workers=16 \
               --model="$CM_MODEL" \
@@ -283,8 +277,10 @@ jobs:
               --compact
           done
 
-          # Export all OPEN findings accumulated in this runner's state.db
-          cm report --format=json --status=OPEN > "$RUNNER_TEMP/findings-shard-${{ matrix.shard.id }}.json"
+          # Export findings and strip the `.cm_shard/batch_N/` prefix so paths match the repo root
+          cm report --format=json --status=OPEN \
+            | jq 'map(.file_path |= sub("^\\.cm_shard/batch_[0-9]+/"; ""))' \
+            > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
 
       - name: Upload Shard Findings
         if: ${{ !cancelled() }}
@@ -317,8 +313,8 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ inputs.wif_provider }}
-          service_account: ${{ inputs.wif_service_account }}
+          workload_identity_provider: ${{ secrets.wif_provider }}
+          service_account: ${{ secrets.wif_service_account }}
 
       - name: Install CodeMender CLI
         run: |
