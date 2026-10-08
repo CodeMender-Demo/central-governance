@@ -18,12 +18,11 @@ on:
         required: false
         type: string
         default: '20'
+    secrets:
       wif_provider:
           required: true
-          type: string
       wif_service_account:
           required: true
-          type: string
           
 
 permissions:
