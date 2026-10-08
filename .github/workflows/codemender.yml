@@ -18,6 +18,13 @@ on:
         required: false
         type: string
         default: '20'
+      wif_provider:
+          required: true
+          type: string
+      wif_service_account:
+          required: true
+          type: string
+          
 
 permissions:
     contents: read
@@ -59,8 +66,8 @@ jobs:
 
       - uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.wif_service_account }}
 
       - name: Install CodeMender CLI
         run: |
@@ -207,8 +214,8 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.wif_service_account }}
 
       - name: Install CodeMender CLI
         run: |
@@ -312,8 +319,8 @@ jobs:
       - uses: google-github-actions/auth@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ inputs.wif_provider }}
+          service_account: ${{ inputs.wif_service_account }}
 
       - name: Install CodeMender CLI
         run: |
