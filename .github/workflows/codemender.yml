@@ -11,13 +11,13 @@ on:
       shards:
         description: 'Number of parallel runners for Deep Scan'
         required: false
-        default: '60'
+        default: '120'
   workflow_call:
     inputs:
       shards:
         required: false
         type: string
-        default: '60'
+        default: '120'
     secrets:
       wif_provider:
           required: true
