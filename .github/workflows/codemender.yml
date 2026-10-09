@@ -203,7 +203,7 @@ jobs:
         env:
           SHARD_ID: ${{ matrix.shard.id }}
           NUM_SHARDS: ${{ inputs.shards || '10' }}
-          BATCHES_PER_RUNNER: "12"
+          BATCHES_PER_RUNNER: "1"
           CM_TELEMETRY_OPT_OUT: "1"
         run: |
           python3 - << 'EOF'
