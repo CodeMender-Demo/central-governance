@@ -391,16 +391,15 @@ jobs:
             | unique_by(.file_path, .line, .title)
             | map({
                 file_path: .file_path,
-                line: (.line // 1),
                 title: .title,
                 message: (.message // .description // .title),
                 severity: .severity,
-                vuln_type: (.vuln_type // "CWE-Other")
-                vuln_id: (.vuln_id)
-                confidence: (.confidence)
-                analysis: (.analysis)
-                snippet: (.snippet)
-                start_line (.start_line)
+                vuln_type: (.vuln_type // "CWE-Other"),
+                vuln_id: (.vuln_id),
+                confidence: (.confidence),
+                analysis: (.analysis),
+                snippet: (.snippet),
+                start_line (.start_line),
                 start_line (.end_line)
               })
           ' "$RUNNER_TEMP"/shards/findings-shard-*.json > "$RUNNER_TEMP/merged-findings.json"
