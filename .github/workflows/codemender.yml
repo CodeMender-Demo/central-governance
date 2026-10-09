@@ -301,6 +301,7 @@ jobs:
               --yes \
               --bypass-warning \
               --compact \
+              -v \
               -c "All ${file_count} target files are directly in the current root directory (.). Step 1: Call list_dir on '.' once. Step 2+: Call read_file in parallel batches of up to 12 files per turn so all ${file_count} files are read in 1-2 turns (NEVER call read_file on more than 12 files in a single turn). STRICT RULES: (1) NEVER call read_file on the same file twice. (2) NEVER call grep_search or access any path outside '.'. (3) Immediately after reading all files once, output all vulnerabilities found and finish."; then
               break
             fi
