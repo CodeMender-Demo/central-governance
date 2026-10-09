@@ -201,159 +201,167 @@ jobs:
 
       - name: Build 12 Batches & Run Concurrent Single-Session Scans
         env:
-          SHARD_INDEX: ${{ matrix.shard }}
-          NUM_BATCHES: 12
+          SHARD_ID: ${{ matrix.shard.id }}
+          NUM_SHARDS: ${{ inputs.shards || '10' }}
+          BATCHES_PER_RUNNER: "12"
+          CM_TELEMETRY_OPT_OUT: "1"
         run: |
-          set -euo pipefail
+          python3 - << 'EOF'
+          import json, os, pathlib
 
-          cat << 'EOF' > /tmp/setup_batches.py
-          import json, os, shutil
+          shard_id = int(os.environ["SHARD_ID"])
+          num_shards = int(os.environ.get("NUM_SHARDS", "10"))
+          num_batches = int(os.environ.get("BATCHES_PER_RUNNER", "12"))
+          runner_temp = os.environ["RUNNER_TEMP"]
 
-          num_batches = int(os.environ.get("NUM_BATCHES", "12"))
-          with open("shard-files.txt") as f:
-              files = [line.strip() for line in f if line.strip()]
+          include_exts = {
+              ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
+              ".ts", ".tsx", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+              ".cs", ".rs", ".kt", ".kts", ".rb", ".php"
+          }
+          exclude_dirs = {
+              ".git", ".github", ".codemender", ".cm_project", ".cm_shard",
+              "node_modules", "vendor", "dist", "bin", "target", "obj",
+              "build", ".gradle", "test", "tests", "__tests__", "spec",
+              "mocks", "fixtures", "docs", "examples", "migrations",
+              "third_party", "results", "scorecard", "scripts"
+          }
 
-          batches = [[] for _ in range(num_batches)]
-          for idx, filepath in enumerate(files):
-              batches[idx % num_batches].append(filepath)
+          all_files = []
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+              for f in files:
+                  if pathlib.Path(f).suffix.lower() in include_exts:
+                      p = os.path.normpath(os.path.join(root, f))
+                      try:
+                          sz = os.path.getsize(p)
+                      except OSError:
+                          sz = 1000
+                      all_files.append((p, max(1, sz)))
 
+          # Deterministic LPT sort across shards
+          all_files.sort(key=lambda x: (-x[1], x[0]))
+          shards = [{"id": i, "weight": 0, "files": []} for i in range(num_shards)]
+          for path, sz in all_files:
+              target = min(shards, key=lambda s: (s["weight"], len(s["files"]), s["id"]))
+              target["files"].append((path, sz))
+              target["weight"] += sz
+
+          my_files = [s["files"] for s in shards if s["id"] == shard_id][0]
+
+          # Distribute this shard's files into 12 balanced flat batches (~23 files each)
+          batches = [
+              {"id": f"{i:02d}", "weight": 0, "file_count": 0, "used_names": set()}
+              for i in range(num_batches)
+          ]
           path_map = {}
-          counts = []
-          for b_idx, batch_files in enumerate(batches):
-              if not batch_files:
-                  continue
-              batch_name = f"batch_{b_idx:02d}"
+
+          for rel_path, sz in my_files:
+              b_target = min(batches, key=lambda b: (b["file_count"], b["weight"], b["id"]))
+              b_target["weight"] += sz
+              b_target["file_count"] += 1
+
+              batch_name = f"batch_{b_target['id']}"
               batch_dir = os.path.join(".cm_shard", batch_name)
               os.makedirs(batch_dir, exist_ok=True)
-              counts.append(len(batch_files))
 
-              for src_path in batch_files:
-                  base = os.path.basename(src_path)
-                  dst_name = base
-                  collision = 1
-                  while os.path.exists(os.path.join(batch_dir, dst_name)):
-                      stem, ext = os.path.splitext(base)
-                      dst_name = f"{stem}_{collision}{ext}"
-                      collision += 1
+              # Flatten into batch root so Step 1 (list_dir) sees all files immediately
+              flat_name = os.path.basename(rel_path)
+              if flat_name in b_target["used_names"]:
+                  flat_name = rel_path.replace(os.sep, "__")
+              b_target["used_names"].add(flat_name)
 
-                  dst_rel = f".cm_shard/{batch_name}/{dst_name}"
-                  try:
-                      os.link(src_path, dst_rel)
-                  except OSError:
-                      shutil.copy2(src_path, dst_rel)
+              os.link(rel_path, os.path.join(batch_dir, flat_name))
+              path_map[f".cm_shard/{batch_name}/{flat_name}"] = rel_path
+              path_map[f"{batch_name}/{flat_name}"] = rel_path
+              path_map[flat_name] = rel_path
 
-                  path_map[dst_rel] = src_path
-                  path_map[f"{batch_name}/{dst_name}"] = src_path
+          with open(os.path.join(runner_temp, "path-map.json"), "w") as fp:
+              json.dump(path_map, fp)
 
-          with open(".cm_shard/path-map.json", "w") as out:
-              json.dump(path_map, out, indent=2)
-
-          print(f"Shard {os.environ.get('SHARD_INDEX')}: distributed {len(files)} files into {len(counts)} flat batches: {counts}")
+          active_counts = [b["file_count"] for b in batches if b["file_count"] > 0]
+          print(f"Shard {shard_id}: distributed {len(my_files)} files into {len(active_counts)} flat batches: {active_counts}")
           EOF
 
-          cat << 'EOF' > /tmp/set_project_path.py
-          import sys, re
-          cfg_path, batch_abs = sys.argv[1], sys.argv[2]
-          with open(cfg_path, "r") as f:
-              content = f.read()
-          content = re.sub(
-              r"project_paths:\s*\n(?:\s*-\s*.*\n?)+",
-              f'project_paths:\n  - "{batch_abs}"\n',
-              content,
-          )
-          with open(cfg_path, "w") as f:
-              f.write(content)
-          EOF
-
-          cat << 'EOF' > /tmp/restore_paths.py
-          import json, sys
-          report_path, map_path = sys.argv[1], sys.argv[2]
-          with open(map_path) as f:
-              path_map = json.load(f)
-          with open(report_path) as f:
-              text = f.read()
-          for flat_path in sorted(path_map, key=len, reverse=True):
-              text = text.replace(flat_path, path_map[flat_path])
-          with open(report_path, "w") as f:
-              f.write(text)
-          EOF
-
-          python3 /tmp/setup_batches.py
-          mkdir -p reports
+          printf '%s\n' .cm_shard .cm_project >> .git/info/exclude
 
           scan_batch() {
             local batch_dir="$1"
-            local stagger_sec="$2"
             local batch_name
             batch_name=$(basename "$batch_dir")
+            local batch_num="${batch_name#batch_}"
             local batch_abs_path
-            batch_abs_path=$(cd "$batch_dir" && pwd)
+            batch_abs_path="$(cd "$batch_dir" && pwd)"
             local file_count
-            file_count=$(find "$batch_dir" -maxdepth 1 -type f | wc -l)
+            file_count=$(find "$batch_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')
 
-            if [ "$stagger_sec" -gt 0 ]; then
-              sleep "$stagger_sec"
-            fi
+            # Stagger batch starts by 2s to avoid simultaneous 120-session API bursts
+            sleep $((10#$batch_num * 2))
 
             local max_attempts=3
             local attempt=1
             local scan_ok=0
 
             while [ "$attempt" -le "$max_attempts" ]; do
-              export CM_HOME="${RUNNER_TEMP:-/tmp}/cm_home_${batch_name}"
+              export CM_HOME="$RUNNER_TEMP/cm_home_${batch_name}"
               rm -rf "$CM_HOME" "$batch_dir/.cm_project"
               mkdir -p "$CM_HOME"
 
-              echo "=== [Shard ${SHARD_INDEX} / ${batch_name}] Scanning ${file_count} files (Attempt ${attempt}/${max_attempts}) ==="
-
               cm init
-              python3 /tmp/set_project_path.py "$CM_HOME/config.yaml" "$batch_abs_path"
+              cat <<EOF > "$CM_HOME/config.yaml"
+          model: "$CM_MODEL"
+          human_confirmation: false
+          confirm_writes: false
+          project_paths:
+            - "$batch_abs_path"
+          sandbox:
+            enabled: false
+          EOF
 
+              echo "=== [Shard $SHARD_ID / $batch_name] Scanning ${file_count} files (Attempt ${attempt}/${max_attempts}) ==="
               if cm find "$batch_dir" \
+                --model="$CM_MODEL" \
+                --sandbox=false \
+                --yes \
+                --bypass-warning \
+                --compact \
                 -c "All ${file_count} target files are directly in the current root directory (.). Step 1: Call list_dir on '.' once. Step 2+: Call read_file in parallel batches of 12-15 files per turn so all ${file_count} files are read in 2 turns. STRICT RULES: (1) NEVER call read_file on the same file twice. (2) NEVER call grep_search or access any path outside '.'. (3) Immediately after reading all files once, output all vulnerabilities found and finish."; then
                 scan_ok=1
                 break
               else
-                echo "⚠️ [Shard ${SHARD_INDEX} / ${batch_name}] Attempt ${attempt} failed (likely transient Vertex AI code=13). Retrying in $((attempt * 5))s..."
+                echo "⚠️ [Shard $SHARD_ID / $batch_name] Attempt ${attempt} failed (likely transient Vertex AI code=13). Retrying in $((attempt * 5))s..."
                 sleep $((attempt * 5))
                 attempt=$((attempt + 1))
               fi
             done
 
             if [ "$scan_ok" -ne 1 ]; then
-              echo "❌ [Shard ${SHARD_INDEX} / ${batch_name}] Failed after ${max_attempts} attempts."
+              echo "❌ [Shard $SHARD_ID / $batch_name] Failed after ${max_attempts} attempts."
               rm -rf "$CM_HOME"
               return 1
             fi
 
-            cm report -o "reports/report-shard-${SHARD_INDEX}-${batch_name}.md" || true
-
-            if [ -f "reports/report-shard-${SHARD_INDEX}-${batch_name}.md" ]; then
-              python3 /tmp/restore_paths.py "reports/report-shard-${SHARD_INDEX}-${batch_name}.md" ".cm_shard/path-map.json"
-            fi
+            # Export findings and remap flat batch paths back to original repo relative paths
+            cm report --format=json --status=OPEN \
+              | jq --slurpfile pmap "$RUNNER_TEMP/path-map.json" '
+                  ($pmap[0] // {}) as $m
+                  | map(.file_path as $fp | .file_path = ($m[$fp] // ($fp | sub("^\\.cm_shard/batch_[0-9]+/"; ""))))
+                ' \
+              > "$RUNNER_TEMP/findings-${batch_name}.json"
 
             rm -rf "$CM_HOME"
           }
 
-          pids=()
-          idx=0
-          for batch_dir in .cm_shard/batch_*; do
-            [ -d "$batch_dir" ] || continue
-            stagger=$((idx * 2))
-            scan_batch "$batch_dir" "$stagger" &
-            pids+=($!)
-            idx=$((idx + 1))
-          done
+          export -f scan_batch
+          export GITHUB_WORKSPACE RUNNER_TEMP CM_MODEL SHARD_ID
 
-          fail=0
-          for pid in "${pids[@]}"; do
-            if ! wait "$pid"; then
-              fail=1
-            fi
-          done
+          # Launch all 12 batches concurrently on this runner (staggered by 2s each)
+          find .cm_shard -mindepth 1 -maxdepth 1 -type d | sort \
+            | xargs -P "$BATCHES_PER_RUNNER" -I {} bash -c 'scan_batch "{}"'
 
-          rm -rf .cm_shard
-          exit "$fail"
+          # Merge all batch outputs for this shard
+          jq -s 'add // []' "$RUNNER_TEMP"/findings-batch_*.json \
+            > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
 
       - name: Cancel Any Lingering Backend Sessions on Timeout/Failure
         if: ${{ failure() || cancelled() }}
