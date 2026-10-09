@@ -199,7 +199,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/cm/cm"
           echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
 
-      - name: Build 12 Batches & Run Concurrent Single-Session Scans
+      - name: Build 1 Batches & Run Concurrent Single-Session Scans
         env:
           SHARD_ID: ${{ matrix.shard.id }}
           NUM_SHARDS: ${{ inputs.shards || '10' }}
@@ -211,7 +211,7 @@ jobs:
 
           shard_id = int(os.environ["SHARD_ID"])
           num_shards = int(os.environ.get("NUM_SHARDS", "10"))
-          num_batches = int(os.environ.get("BATCHES_PER_RUNNER", "12"))
+          num_batches = int(os.environ.get("BATCHES_PER_RUNNER", "1"))
           runner_temp = os.environ["RUNNER_TEMP"]
 
           include_exts = {
