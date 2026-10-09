@@ -400,8 +400,8 @@ jobs:
                 confidence: (.confidence),
                 analysis: (.analysis),
                 snippet: (.snippet),
-                start_line (.start_line),
-                start_line (.end_line)
+                start_line: (.start_line),
+                end_line: (.end_line)
               })
           ' "$RUNNER_TEMP"/shards/findings-shard-*.json > "$RUNNER_TEMP/merged-findings.json"
 
