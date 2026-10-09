@@ -17,7 +17,7 @@ on:
       shards:
         required: false
         type: string
-        default: '15'
+        default: '180'
     secrets:
       wif_provider:
           required: true
@@ -177,7 +177,7 @@ jobs:
       id-token: write
     strategy:
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 100
       matrix:
         shard: ${{ fromJson(needs.prepare-shards.outputs.matrix) }}
     steps:
