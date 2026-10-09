@@ -199,11 +199,11 @@ jobs:
           chmod +x "$RUNNER_TEMP/cm/cm"
           echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
 
-      - name: Build 18 Batches & Run Concurrent Single-Session Scans
+      - name: Build 12 Batches & Run Concurrent Single-Session Scans
         env:
           SHARD_ID: ${{ matrix.shard.id }}
           NUM_SHARDS: ${{ inputs.shards || '10' }}
-          BATCHES_PER_RUNNER: "18"
+          BATCHES_PER_RUNNER: "12"
           CM_TELEMETRY_OPT_OUT: "1"
         run: |
           python3 - << 'EOF'
@@ -211,7 +211,7 @@ jobs:
 
           shard_id = int(os.environ["SHARD_ID"])
           num_shards = int(os.environ.get("NUM_SHARDS", "10"))
-          num_batches = int(os.environ.get("BATCHES_PER_RUNNER", "18"))
+          num_batches = int(os.environ.get("BATCHES_PER_RUNNER", "12"))
           runner_temp = os.environ["RUNNER_TEMP"]
 
           include_exts = {
@@ -253,7 +253,7 @@ jobs:
 
           my_files = [s["files"] for s in shards if s["id"] == shard_id][0]
 
-          # Distribute this shard's files into 18 balanced flat batches (~15 files each)
+          # Distribute this shard's files into 12 balanced flat batches (~22-23 files each)
           batches = [
               {"id": f"{i:02d}", "weight": 0, "file_count": 0, "used_names": set()}
               for i in range(num_batches)
@@ -269,6 +269,7 @@ jobs:
               batch_dir = os.path.join(".cm_shard", batch_name)
               os.makedirs(batch_dir, exist_ok=True)
 
+              # Flatten into batch root so Step 1 (list_dir) sees all files immediately
               flat_name = os.path.basename(rel_path)
               if flat_name in b_target["used_names"]:
                   flat_name = rel_path.replace(os.sep, "__")
@@ -298,8 +299,8 @@ jobs:
             local file_count
             file_count=$(find "$batch_dir" -maxdepth 1 -type f | wc -l | tr -d ' ')
 
-            # Stagger batch starts by 1s
-            sleep $((10#$batch_num * 1))
+            # Stagger batch starts by 2s to avoid simultaneous 120-session API bursts
+            sleep $((10#$batch_num * 2))
 
             local max_attempts=3
             local attempt=1
@@ -328,7 +329,7 @@ jobs:
                 --yes \
                 --bypass-warning \
                 --compact \
-                -c "All ${file_count} target files are directly in the current root directory (.). Step 1: Call list_dir on '.' once. Step 2: Call read_file on ALL ${file_count} files in a SINGLE parallel turn (all ${file_count} read_file calls at once). Step 3: Immediately report all vulnerabilities found and finish. STRICT RULES: NEVER call read_file on any file a second time, and NEVER call grep_search or access any path outside '.' ."; then
+                -c "All ${file_count} target files are directly in the current root directory (.). Step 1: Call list_dir on '.' once. Step 2+: Call read_file in parallel batches of 11-12 files per turn so all ${file_count} files are read in 2 turns (NEVER call read_file on more than 12 files in a single turn). STRICT RULES: (1) NEVER call read_file on the same file twice. (2) NEVER call grep_search or access any path outside '.'. (3) Immediately after reading all files once, output all vulnerabilities found and finish."; then
                 scan_ok=1
                 break
               else
@@ -344,6 +345,7 @@ jobs:
               return 1
             fi
 
+            # Export findings and remap flat batch paths back to original repo relative paths
             cm report --format=json --status=OPEN \
               | jq --slurpfile pmap "$RUNNER_TEMP/path-map.json" '
                   ($pmap[0] // {}) as $m
@@ -357,7 +359,7 @@ jobs:
           export -f scan_batch
           export GITHUB_WORKSPACE RUNNER_TEMP CM_MODEL SHARD_ID
 
-          # Launch all 18 batches concurrently on this runner (staggered by 1s each)
+          # Launch all 12 batches concurrently on this runner (staggered by 2s each)
           find .cm_shard -mindepth 1 -maxdepth 1 -type d | sort \
             | xargs -P "$BATCHES_PER_RUNNER" -I {} bash -c 'scan_batch "{}"'
 
