@@ -17,7 +17,7 @@ on:
       shards:
         required: false
         type: string
-        default: '540'
+        default: '250'
     secrets:
       wif_provider:
           required: true
