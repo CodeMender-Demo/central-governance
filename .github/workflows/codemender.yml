@@ -206,9 +206,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 1. Distribute shard files into 12 flat batch directories (~23 files each)
-          #    and record a path-map.json to restore original relative paths in reports.
-          python3 - <<'PYEOF'
+          cat << 'EOF' > /tmp/setup_batches.py
           import json, os, shutil
 
           num_batches = int(os.environ.get("NUM_BATCHES", "12"))
@@ -232,7 +230,6 @@ jobs:
               for src_path in batch_files:
                   base = os.path.basename(src_path)
                   dst_name = base
-                  # Guard against duplicate basenames within the same batch
                   collision = 1
                   while os.path.exists(os.path.join(batch_dir, dst_name)):
                       stem, ext = os.path.splitext(base)
@@ -252,8 +249,36 @@ jobs:
               json.dump(path_map, out, indent=2)
 
           print(f"Shard {os.environ.get('SHARD_INDEX')}: distributed {len(files)} files into {len(counts)} flat batches: {counts}")
-          PYEOF
+          EOF
 
+          cat << 'EOF' > /tmp/set_project_path.py
+          import sys, re
+          cfg_path, batch_abs = sys.argv[1], sys.argv[2]
+          with open(cfg_path, "r") as f:
+              content = f.read()
+          content = re.sub(
+              r"project_paths:\s*\n(?:\s*-\s*.*\n?)+",
+              f'project_paths:\n  - "{batch_abs}"\n',
+              content,
+          )
+          with open(cfg_path, "w") as f:
+              f.write(content)
+          EOF
+
+          cat << 'EOF' > /tmp/restore_paths.py
+          import json, sys
+          report_path, map_path = sys.argv[1], sys.argv[2]
+          with open(map_path) as f:
+              path_map = json.load(f)
+          with open(report_path) as f:
+              text = f.read()
+          for flat_path in sorted(path_map, key=len, reverse=True):
+              text = text.replace(flat_path, path_map[flat_path])
+          with open(report_path, "w") as f:
+              f.write(text)
+          EOF
+
+          python3 /tmp/setup_batches.py
           mkdir -p reports
 
           scan_batch() {
@@ -266,7 +291,6 @@ jobs:
             local file_count
             file_count=$(find "$batch_dir" -maxdepth 1 -type f | wc -l)
 
-            # Stagger startup to avoid simultaneous 120-session API bursts
             if [ "$stagger_sec" -gt 0 ]; then
               sleep "$stagger_sec"
             fi
@@ -283,21 +307,7 @@ jobs:
               echo "=== [Shard ${SHARD_INDEX} / ${batch_name}] Scanning ${file_count} files (Attempt ${attempt}/${max_attempts}) ==="
 
               cm init
-
-              # Restrict project_paths strictly to this batch's directory
-              python3 - "$CM_HOME/config.yaml" "$batch_abs_path" <<'PYEOF'
-          import sys, re
-          cfg_path, batch_abs = sys.argv[1], sys.argv[2]
-          with open(cfg_path, "r") as f:
-              content = f.read()
-          content = re.sub(
-              r"project_paths:\s*\n(?:\s*-\s*.*\n?)+",
-              f'project_paths:\n  - "{batch_abs}"\n',
-              content,
-          )
-          with open(cfg_path, "w") as f:
-              f.write(content)
-          PYEOF
+              python3 /tmp/set_project_path.py "$CM_HOME/config.yaml" "$batch_abs_path"
 
               if cm find "$batch_dir" \
                 -c "All ${file_count} target files are directly in the current root directory (.). Step 1: Call list_dir on '.' once. Step 2+: Call read_file in parallel batches of 12-15 files per turn so all ${file_count} files are read in 2 turns. STRICT RULES: (1) NEVER call read_file on the same file twice. (2) NEVER call grep_search or access any path outside '.'. (3) Immediately after reading all files once, output all vulnerabilities found and finish."; then
@@ -318,20 +328,8 @@ jobs:
 
             cm report -o "reports/report-shard-${SHARD_INDEX}-${batch_name}.md" || true
 
-            # Restore original repository file paths in the generated report
             if [ -f "reports/report-shard-${SHARD_INDEX}-${batch_name}.md" ]; then
-              python3 - "reports/report-shard-${SHARD_INDEX}-${batch_name}.md" ".cm_shard/path-map.json" <<'PYEOF'
-          import json, sys
-          report_path, map_path = sys.argv[1], sys.argv[2]
-          with open(map_path) as f:
-              path_map = json.load(f)
-          with open(report_path) as f:
-              text = f.read()
-          for flat_path, orig_path in sorted(path_map.items(), key=lambda x: -len(x[0])):
-              text = text.replace(flat_path, orig_path)
-          with open(report_path, "w") as f:
-              f.write(text)
-          PYEOF
+              python3 /tmp/restore_paths.py "reports/report-shard-${SHARD_INDEX}-${batch_name}.md" ".cm_shard/path-map.json"
             fi
 
             rm -rf "$CM_HOME"
