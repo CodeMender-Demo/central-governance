@@ -123,7 +123,7 @@ jobs:
           python3 - << 'EOF'
           import json, os, pathlib
 
-          num_shards = int(os.environ.get("NUM_SHARDS", "20"))
+          # num_shards = int(os.environ.get("NUM_SHARDS", "20"))
 
           include_exts = {
               ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
@@ -147,6 +147,10 @@ jobs:
                       size = max(1, os.path.getsize(rel_path))
                       all_files.append((rel_path, size))
 
+          total_files = len(all_files)
+          calculated_shards = (total_files + 14) // 15
+          num_shards = max(10, min(250, calculated_shards))
+          
           # Sort largest files first (LPT) and distribute across N shards
           all_files.sort(key=lambda x: x[1], reverse=True)
           shards = [{"id": i, "file_count": 0, "byte_weight": 0} for i in range(num_shards)]
