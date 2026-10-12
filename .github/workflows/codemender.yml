@@ -1,11 +1,6 @@
 name: CodeMender Security Scan
     
 on:
-  pull_request:
-    branches: [main]
-  # schedule:
-    # Nightly full-repo deep scan at 02:00 UTC
-    # - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       shards:
@@ -42,62 +37,6 @@ env:
 
 jobs:
   # ============================================================================
-  # TIER 1: Pull Request Diff + Caller/Callee Impact Scan (< 2 minutes)
-  # ============================================================================
-  pr-diff-scan:
-    name: CodeMender PR Diff Scan
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: write
-      security-events: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.wif_provider }}
-          service_account: ${{ secrets.wif_service_account }}
-
-      - name: Install CodeMender CLI
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/cm.zip" "$CM_DOWNLOAD_URL"
-          unzip -q -o "$RUNNER_TEMP/cm.zip" -d "$RUNNER_TEMP/cm"
-          chmod +x "$RUNNER_TEMP/cm/cm"
-          echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
-
-      - name: Run Diff Scan with Impact Analysis
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          cm init
-          cm find . \
-            --diff="origin/$BASE_REF" \
-            --diff-workers=16 \
-            --diff-depth=2 \
-            --diff-max-neighbors=15 \
-            --model="$CM_MODEL" \
-            --fail-on="$FAIL_ON_SEVERITIES" \
-            --sandbox=false
-          cm report -f sarif > codemender-pr.sarif 
-
-      - name: Upload SARIF to GitHub Code Scanning
-        if: ${{ !cancelled() && hashFiles('codemender-pr.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: codemender-pr.sarif
-          category: codemender-pr
-
-  # ============================================================================
   # TIER 2 (STEP 1): Dynamic LPT Directory Sharding (< 15 seconds)
   # ============================================================================
   prepare-shards:
@@ -124,6 +63,7 @@ jobs:
           import json, os, pathlib
 
           # num_shards = int(os.environ.get("NUM_SHARDS", "20"))
+          runner_temp = os.environ["RUNNER_TEMP"]
 
           include_exts = {
               ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
@@ -134,17 +74,25 @@ jobs:
               ".git", ".github", ".codemender", ".cm_project", ".cm_shard",
               "node_modules", "vendor", "dist", "bin", "target", "obj",
               "build", ".gradle", "test", "tests", "__tests__", "spec",
-              "mocks", "fixtures", "docs", "examples", "migrations", "third_party"
+              "mocks", "fixtures", "docs", "examples", "migrations",
+              "third_party", "results", "scorecard", "scripts"
           }
+          exclude_suffixes = (".min.js", "-min.js", ".bundle.js", ".min.cjs", ".min.mjs")
 
           # Collect every scannable file and its byte size
           all_files = []
           for root, dirs, files in os.walk("."):
               dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
               for f in files:
-                  if pathlib.Path(f).suffix in include_exts:
-                      rel_path = os.path.relpath(os.path.join(root, f), ".")
-                      size = max(1, os.path.getsize(rel_path))
+                  fl = f.lower()
+                  if fl.endswith(exclude_suffixes):
+                      continue
+                  if pathlib.Path(fl).suffix in include_exts:
+                      rel_path = os.path.normpath(os.path.relpath(os.path.join(root, f), "."))
+                      try:
+                          size = max(1, os.path.getsize(rel_path))
+                      except OSError:
+                          size = 1000
                       all_files.append((rel_path, size))
 
           total_files = len(all_files)
@@ -152,21 +100,34 @@ jobs:
           num_shards = max(10, min(250, calculated_shards))
           
           # Sort largest files first (LPT) and distribute across N shards
-          all_files.sort(key=lambda x: x[1], reverse=True)
-          shards = [{"id": i, "file_count": 0, "byte_weight": 0} for i in range(num_shards)]
+          all_files.sort(key=lambda x: (-x[1], x[0]))
+          shards = [{"id": i, "file_count": 0, "byte_weight": 0, "files": []} for i in range(num_shards)]
 
-          for _, size in all_files:
-              # Pick shard with fewest files (tie-break by byte_weight)
-              target = min(shards, key=lambda s: (s["file_count"], s["byte_weight"]))
+          for rel_path, size in all_files:
+              # Pick shard with fewest files (tie-break by byte_weight, then shard id)
+              target = min(shards, key=lambda s: (s["file_count"], s["byte_weight"], s["id"]))
               target["file_count"] += 1
               target["byte_weight"] += size
+              target["files"].append(rel_path)
 
-          active_shards = [{"id": s["id"], "file_count": s["file_count"]} for s in shards if s["file_count"] > 0]
-          print(f"Created {len(active_shards)} shards. File counts: {[s['file_count'] for s in active_shards]}")
+          active_shards = [s for s in shards if s["file_count"] > 0]
+          matrix_shards = [{"id": s["id"], "file_count": s["file_count"]} for s in active_shards]
+          print(f"Created {len(active_shards)} shards ({total_files} total files). File counts: {[s['file_count'] for s in active_shards]}")
+
+          manifest = {str(s["id"]): s["files"] for s in active_shards}
+          with open(os.path.join(runner_temp, "shard-manifest.json"), "w") as f:
+              json.dump(manifest, f, indent=2)
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"matrix={json.dumps(active_shards)}\n")
+              f.write(f"matrix={json.dumps(matrix_shards)}\n")
           EOF
+
+      - name: Upload Shard Manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemender-shard-manifest
+          path: ${{ runner.temp }}/shard-manifest.json
+          retention-days: 1
 
   # ============================================================================
   # TIER 2 (STEP 2): Parallel Sharded Deep Scan (20 runners x 16 workers = 320 workers)
@@ -190,6 +151,12 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Download Shard Manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: codemender-shard-manifest
+          path: ${{ runner.temp }}
+
       - uses: google-github-actions/auth@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
@@ -206,69 +173,34 @@ jobs:
       - name: Run Single-Batch CodeMender Scan
         env:
           SHARD_ID: ${{ matrix.shard.id }}
-          NUM_SHARDS: ${{ inputs.shards || '180' }}
           CM_TELEMETRY_OPT_OUT: "1"
         run: |
           python3 - << 'EOF'
-          import json, os, pathlib
+          import json, os
 
-          shard_id = int(os.environ["SHARD_ID"])
-          num_shards = int(os.environ.get("NUM_SHARDS", "180"))
+          shard_id = str(os.environ["SHARD_ID"])
           runner_temp = os.environ["RUNNER_TEMP"]
 
-          include_exts = {
-              ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
-              ".ts", ".tsx", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
-              ".cs", ".rs", ".kt", ".kts", ".rb", ".php"
-          }
-          exclude_dirs = {
-              ".git", ".github", ".codemender", ".cm_project", ".cm_shard",
-              "node_modules", "vendor", "dist", "bin", "target", "obj",
-              "build", ".gradle", "test", "tests", "__tests__", "spec",
-              "mocks", "fixtures", "docs", "examples", "migrations",
-              "third_party", "results", "scorecard", "scripts"
-          }
-          exclude_suffixes = (".min.js", "-min.js", ".bundle.js", ".min.cjs", ".min.mjs")
+          with open(os.path.join(runner_temp, "shard-manifest.json")) as fp:
+              manifest = json.load(fp)
 
-          all_files = []
-          for root, dirs, files in os.walk("."):
-              dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
-              for f in files:
-                  fl = f.lower()
-                  if fl.endswith(exclude_suffixes):
-                      continue
-                  if pathlib.Path(fl).suffix in include_exts:
-                      p = os.path.normpath(os.path.join(root, f))
-                      try:
-                          sz = os.path.getsize(p)
-                      except OSError:
-                          sz = 1000
-                      all_files.append((p, max(1, sz)))
-
-          all_files.sort(key=lambda x: (-x[1], x[0]))
-          shards = [{"id": i, "weight": 0, "files": []} for i in range(num_shards)]
-          for path, sz in all_files:
-              target = min(shards, key=lambda s: (s["weight"], len(s["files"]), s["id"]))
-              target["files"].append((path, sz))
-              target["weight"] += sz
-
-          my_files = shards[shard_id]["files"] if shard_id < len(shards) else []
+          my_files = manifest.get(shard_id, [])
           os.makedirs(".cm_shard", exist_ok=True)
+          shard_abs_dir = os.path.abspath(".cm_shard")
 
           path_map = {}
-          used_names = set()
-          for rel_path, _ in my_files:
-              flat_name = os.path.basename(rel_path)
-              if flat_name in used_names:
-                  flat_name = rel_path.replace(os.sep, "__")
-              used_names.add(flat_name)
+          for rel_path in my_files:
+              norm_rel = os.path.normpath(rel_path)
+              flat_name = norm_rel.replace(os.sep, "__")
 
-              os.link(rel_path, os.path.join(".cm_shard", flat_name))
-              path_map[f".cm_shard/{flat_name}"] = rel_path
-              path_map[flat_name] = rel_path
+              os.link(norm_rel, os.path.join(".cm_shard", flat_name))
+              path_map[flat_name] = norm_rel
+              path_map[f"./{flat_name}"] = norm_rel
+              path_map[f".cm_shard/{flat_name}"] = norm_rel
+              path_map[os.path.join(shard_abs_dir, flat_name)] = norm_rel
 
           with open(os.path.join(runner_temp, "path-map.json"), "w") as fp:
-              json.dump(path_map, fp)
+              json.dump(path_map, fp, indent=2)
 
           print(f"Shard {shard_id}: staged {len(my_files)} files into .cm_shard")
           EOF
@@ -321,7 +253,11 @@ jobs:
           cm report --format=json --status=OPEN \
             | jq --slurpfile pmap "$RUNNER_TEMP/path-map.json" '
                 ($pmap[0] // {}) as $m
-                | map(.file_path as $fp | .file_path = ($m[$fp] // ($fp | sub("^\\.cm_shard/"; ""))))
+                | map(
+                    .file_path as $fp
+                    | ($fp | split("/") | last) as $base
+                    | .file_path = ($m[$fp] // $m[$base] // ($base | gsub("__"; "/")))
+                  )
               ' \
             > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
 
@@ -351,7 +287,7 @@ jobs:
   # ============================================================================
   aggregate-and-report:
     name: Aggregate Deep Scan Results
-    needs: deep-scan-shard
+    needs: [prepare-shards, deep-scan-shard]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -424,6 +360,33 @@ jobs:
           # Generate Full Report
           cm report -f md --status=OPEN > codemender-report.md
 
+          if [ -f "$RUNNER_TEMP/shards/shard-manifest.json" ]; then
+            total_scanned=$(jq '[.[] | length] | add // 0' "$RUNNER_TEMP/shards/shard-manifest.json")
+            shard_count=$(jq 'length' "$RUNNER_TEMP/shards/shard-manifest.json")
+
+            jq -r '
+              "\n## Scanned Files by Shard (\([.[] | length] | add // 0) files across \(length) shards)\n\n" +
+              (to_entries
+                | sort_by(.key | tonumber)
+                | map("### Shard \(.key) (\(.value | length) files)\n" + (.value | map("- `\(.)`") | join("\n")))
+                | join("\n\n"))
+            ' "$RUNNER_TEMP/shards/shard-manifest.json" >> codemender-report.md
+
+            {
+              echo ""
+              echo "<details><summary>Scanned Files Inventory (${total_scanned} files across ${shard_count} shards)</summary>"
+              echo ""
+              jq -r '
+                to_entries
+                | sort_by(.key | tonumber)
+                | map("#### Shard \(.key) (\(.value | length) files)\n" + (.value | map("- `\(.)`") | join("\n")))
+                | join("\n\n")
+              ' "$RUNNER_TEMP/shards/shard-manifest.json"
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           # Fail workflow if any finding matches FAIL_ON_SEVERITIES (CRITICAL,HIGH)
           # blocking=$(jq --arg fail_on "$FAIL_ON_SEVERITIES" '
           #   ($fail_on | ascii_upcase | split(",")) as $sev
@@ -446,6 +409,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: codemender-report-$(basename $GITHUB_REPOSITORY)
+          name: codemender-report
           path: codemender-report.md
           retention-days: 7
