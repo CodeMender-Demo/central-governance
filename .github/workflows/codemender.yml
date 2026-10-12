@@ -62,8 +62,8 @@ jobs:
           python3 - << 'EOF'
           import json, os, pathlib
 
-          # num_shards = int(os.environ.get("NUM_SHARDS", "20"))
           runner_temp = os.environ["RUNNER_TEMP"]
+          max_file_bytes = 90_000  # Files >90KB trigger Vertex AI gRPC code=13 on read_file
 
           include_exts = {
               ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
@@ -81,6 +81,7 @@ jobs:
 
           # Collect every scannable file and its byte size
           all_files = []
+          skipped_large = 0
           for root, dirs, files in os.walk("."):
               dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
               for f in files:
@@ -92,27 +93,39 @@ jobs:
                       try:
                           size = max(1, os.path.getsize(rel_path))
                       except OSError:
-                          size = 1000
+                          continue
+                      if size > max_file_bytes:
+                          skipped_large += 1
+                          continue
                       all_files.append((rel_path, size))
 
           total_files = len(all_files)
-          calculated_shards = (total_files + 14) // 15
-          num_shards = max(10, min(250, calculated_shards))
-          
-          # Sort largest files first (LPT) and distribute across N shards
+          total_bytes = sum(sz for _, sz in all_files)
+          shards_by_count = (total_files + 14) // 15
+          shards_by_bytes = (total_bytes + 74_999) // 75_000
+          num_shards = max(10, min(250, max(shards_by_count, shards_by_bytes)))
+
+          # Sort largest files first (LPT) and distribute across N shards by byte_weight first
           all_files.sort(key=lambda x: (-x[1], x[0]))
           shards = [{"id": i, "file_count": 0, "byte_weight": 0, "files": []} for i in range(num_shards)]
 
           for rel_path, size in all_files:
-              # Pick shard with fewest files (tie-break by byte_weight, then shard id)
-              target = min(shards, key=lambda s: (s["file_count"], s["byte_weight"], s["id"]))
+              # Prefer shards under 15 files, then lowest byte_weight, then lowest file_count
+              target = min(
+                  shards,
+                  key=lambda s: (s["file_count"] >= 15, s["byte_weight"], s["file_count"], s["id"])
+              )
               target["file_count"] += 1
               target["byte_weight"] += size
               target["files"].append(rel_path)
 
           active_shards = [s for s in shards if s["file_count"] > 0]
           matrix_shards = [{"id": s["id"], "file_count": s["file_count"]} for s in active_shards]
-          print(f"Created {len(active_shards)} shards ({total_files} total files). File counts: {[s['file_count'] for s in active_shards]}")
+          print(
+              f"Created {len(active_shards)} shards ({total_files} files, "
+              f"{skipped_large} oversized files >{max_file_bytes}B skipped). "
+              f"File counts: {[s['file_count'] for s in active_shards]}"
+          )
 
           manifest = {str(s["id"]): s["files"] for s in active_shards}
           with open(os.path.join(runner_temp, "shard-manifest.json"), "w") as f:
@@ -189,9 +202,13 @@ jobs:
           shard_abs_dir = os.path.abspath(".cm_shard")
 
           path_map = {}
+          used_names = set()
           for rel_path in my_files:
               norm_rel = os.path.normpath(rel_path)
-              flat_name = norm_rel.replace(os.sep, "__")
+              flat_name = os.path.basename(norm_rel)
+              if flat_name in used_names:
+                  flat_name = norm_rel.replace(os.sep, "__")
+              used_names.add(flat_name)
 
               os.link(norm_rel, os.path.join(".cm_shard", flat_name))
               path_map[flat_name] = norm_rel
@@ -209,6 +226,13 @@ jobs:
           if [ "$file_count" -eq 0 ]; then
             echo "[]" > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
             exit 0
+          fi
+
+          shard_bytes=$(wc -c .cm_shard/* 2>/dev/null | tail -n 1 | awk '{print $1}')
+          if [ "${shard_bytes:-0}" -gt 60000 ]; then
+            max_per_turn=6
+          else
+            max_per_turn=12
           fi
 
           printf '%s\n' .cm_shard .cm_project >> .git/info/exclude
@@ -230,7 +254,7 @@ jobs:
             enabled: false
           EOF
 
-            echo "=== [Shard $SHARD_ID] Scanning ${file_count} files (Attempt ${attempt}/3) ==="
+            echo "=== [Shard $SHARD_ID] Scanning ${file_count} files / ${shard_bytes} bytes (Attempt ${attempt}/3, max ${max_per_turn}/turn) ==="
             if cm find .cm_shard \
               --model="$CM_MODEL" \
               --sandbox=false \
@@ -238,7 +262,7 @@ jobs:
               --bypass-warning \
               --compact \
               -v \
-              -c "All ${file_count} target files are directly in the current root directory (.). Step 1: Call list_dir on '.' once. Step 2+: Call read_file in parallel batches of up to 12 files per turn so all ${file_count} files are read in 1-2 turns (NEVER call read_file on more than 12 files in a single turn). STRICT RULES: (1) NEVER call read_file on the same file twice. (2) NEVER call grep_search or access any path outside '.'. (3) Immediately after reading all files once, output all vulnerabilities found and finish."; then
+              -c "All ${file_count} target files are directly in the current root directory (.). Step 1: Call list_dir on '.' once. Step 2+: Call read_file in parallel batches of up to ${max_per_turn} files per turn so all ${file_count} files are read across turns (NEVER call read_file on more than ${max_per_turn} files in a single turn). STRICT RULES: (1) NEVER call read_file on the same file twice. (2) NEVER call grep_search or access any path outside '.'. (3) Immediately after reading all files once, output all vulnerabilities found and finish."; then
               break
             fi
 
@@ -256,7 +280,7 @@ jobs:
                 | map(
                     .file_path as $fp
                     | ($fp | split("/") | last) as $base
-                    | .file_path = ($m[$fp] // $m[$base] // ($base | gsub("__"; "/")))
+                    | .file_path = ($m[$fp] // $m[$base] // ($fp | sub("^\\.cm_shard/"; "")))
                   )
               ' \
             > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
