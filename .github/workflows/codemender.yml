@@ -419,7 +419,8 @@ jobs:
           # Generate SARIF v2.1.0 for GitHub Code Scanning and Markdown for Job Summary
           # cm report -f sarif --status=OPEN > codemender.sarif
           # Generate summary
-          cm report --status=OPEN >> "$GITHUB_STEP_SUMMARY"
+          cm report --status=OPEN > summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
           # Generate Full Report
           cm report -f md --status=OPEN > codemender-report.md
 
@@ -445,6 +446,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: codemender-report-${{ github.repository }}
+          name: codemender-report-$(basename $GITHUB_REPOSITORY)
           path: codemender-report.md
           retention-days: 7
