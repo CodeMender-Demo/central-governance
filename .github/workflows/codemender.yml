@@ -418,7 +418,10 @@ jobs:
 
           # Generate SARIF v2.1.0 for GitHub Code Scanning and Markdown for Job Summary
           # cm report -f sarif --status=OPEN > codemender.sarif
-          cm report -f md --status=OPEN >> "$GITHUB_STEP_SUMMARY"
+          # Generate summary
+          cm report --status=OPEN >> "$GITHUB_STEP_SUMMARY"
+          # Generate Full Report
+          cm report -f md --status=OPEN > codemender-report.md
 
           # Fail workflow if any finding matches FAIL_ON_SEVERITIES (CRITICAL,HIGH)
           # blocking=$(jq --arg fail_on "$FAIL_ON_SEVERITIES" '
@@ -437,3 +440,11 @@ jobs:
       #   with:
       #     sarif_file: codemender.sarif
       #     category: codemender-deep
+      
+      - name: Upload Consolidated Report Artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemender-report-${{ github.repository }}
+          path: codemender-report.md
+          retention-days: 7
