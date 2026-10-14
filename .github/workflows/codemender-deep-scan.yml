@@ -61,6 +61,7 @@ jobs:
             --deep \
             --deep-workers=${{ inputs.workers }} \
             --model="$CM_MODEL" \
-            --sandbox=false
+            --sandbox=false \
+            -v
           cm report -f md > codemender-results.md
           cat codemender-results.md >> $GITHUB_STEP_SUMMARY
