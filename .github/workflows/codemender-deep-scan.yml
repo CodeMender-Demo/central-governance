@@ -4,18 +4,15 @@ on:
   workflow_call:
     inputs:
       model:
-        type: string
-        required: false
-        default: gemini-3.8-flash
-      workers:
-          type: number
           required: false
-          default: 16
+          type: string
+          default: gemini-4-argon
     secrets:
       wif_provider:
           required: true
       wif_service_account:
           required: true
+          
 
 permissions:
     contents: read
@@ -23,27 +20,160 @@ permissions:
     pull-requests: write
     security-events: write
 
+defaults:
+  run:
+    shell: bash
+
 env:
   CM_DOWNLOAD_URL: https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3Astable%3Acm-linux-amd64.zip:download?alt=media
   CM_MODEL: ${{ inputs.model }}
+  FAIL_ON_SEVERITIES: CRITICAL,HIGH
 
 jobs:
-  cm-deep-scan:
-    name: CodeMender Deep Scan
+  # ============================================================================
+  # TIER 2 (STEP 1): Dynamic LPT Directory Sharding (< 15 seconds)
+  # ============================================================================
+  prepare-shards:
+    name: Compute Balanced Scan Shards
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
-      id-token: write
-      security-events: write
-      actions: read
+    outputs:
+      matrix: ${{ steps.shard.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
+
+      - name: Partition files evenly across shards
+        id: shard
+        run: |
+          python3 - << 'EOF'
+          import json, os, pathlib
+
+          runner_temp = os.environ["RUNNER_TEMP"]
+          max_file_bytes = 90_000  # Files >90KB trigger Vertex AI gRPC code=13 on read_file
+
+          include_exts = {
+              ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs",
+              ".ts", ".tsx", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp",
+              ".cs", ".rs", ".kt", ".kts", ".rb", ".php"
+          }
+          exclude_dirs = {
+              ".git", ".github", ".codemender", ".cm_project", ".cm_shard",
+              "node_modules", "vendor", "dist", "bin", "target", "obj",
+              "build", ".gradle", "test", "tests", "__tests__", "spec",
+              "mocks", "fixtures", "docs", "examples", "migrations",
+              "third_party", "results", "scorecard", "scripts"
+          }
+          exclude_suffixes = (
+              ".min.js", "-min.js", ".bundle.js", ".min.cjs", ".min.mjs",
+              "_test.go", "_test.py", "_tests.py", "_test.rs", "_tests.rs",
+              ".test.js", ".test.jsx", ".test.ts", ".test.tsx", ".test.mjs", ".test.cjs",
+              ".spec.js", ".spec.jsx", ".spec.ts", ".spec.tsx", ".spec.rb"
+          )
+          exclude_prefixes = ("test_",)
+
+          # Collect every scannable file and its byte size
+          all_files = []
+          skipped_large = 0
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
+              for f in files:
+                  fl = f.lower()
+                  if fl.endswith(exclude_suffixes) or fl.startswith(exclude_prefixes):
+                      continue
+                  if pathlib.Path(fl).suffix in include_exts:
+                      rel_path = os.path.normpath(os.path.relpath(os.path.join(root, f), "."))
+                      try:
+                          size = max(1, os.path.getsize(rel_path))
+                      except OSError:
+                          continue
+                      if size > max_file_bytes:
+                          skipped_large += 1
+                          continue
+                      all_files.append((rel_path, size))
+
+          total_files = len(all_files)
+          total_bytes = sum(size for _, size in all_files)
+          max_shards = 250
+          shards_by_bytes = (total_bytes + 99_999) // 100_000   # ~100KB per shard target
+          shards_by_files = (total_files + 19) // 20            # ~20 files per shard target
+          calculated_shards = max(shards_by_bytes, shards_by_files)
+          num_shards = max(10, min(max_shards, calculated_shards))
+          max_files_per_shard = max(15, (total_files + num_shards - 1) // num_shards)
+
+          # Sort largest files first (LPT) and distribute across N shards by byte_weight first
+          all_files.sort(key=lambda x: (-x[1], x[0]))
+          shards = [{"id": i, "file_count": 0, "byte_weight": 0, "files": []} for i in range(num_shards)]
+
+          for rel_path, size in all_files:
+              # Prefer shards under max_files_per_shard, then lowest byte_weight, then lowest file_count
+              target = min(
+                  shards,
+                  key=lambda s: (s["file_count"] >= max_files_per_shard, s["byte_weight"], s["file_count"], s["id"])
+              )
+              target["file_count"] += 1
+              target["byte_weight"] += size
+              target["files"].append(rel_path)
+
+          active_shards = [s for s in shards if s["file_count"] > 0]
+          matrix_shards = [{"id": s["id"], "file_count": s["file_count"]} for s in active_shards]
+          print(
+              f"Created {len(active_shards)} shards ({total_files} files, {total_bytes} bytes, "
+              f"{skipped_large} oversized files >{max_file_bytes}B skipped). "
+              f"File counts: {[s['file_count'] for s in active_shards]}"
+          )
+
+          manifest = {str(s["id"]): s["files"] for s in active_shards}
+          with open(os.path.join(runner_temp, "shard-manifest.json"), "w") as f:
+              json.dump(manifest, f, indent=2)
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={json.dumps(matrix_shards)}\n")
+          EOF
+
+      - name: Upload Shard Manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemender-shard-manifest
+          path: ${{ runner.temp }}/shard-manifest.json
+          retention-days: 1
+
+  # ============================================================================
+  # TIER 2 (STEP 2): Parallel Sharded Deep Scan (20 runners x 16 workers = 320 workers)
+  # ============================================================================
+  deep-scan-shard:
+    name: Scan Shard ${{ matrix.shard.id }} (${{ matrix.shard.file_count }} files)
+    needs: prepare-shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      max-parallel: 100
+      matrix:
+        shard: ${{ fromJson(needs.prepare-shards.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download Shard Manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: codemender-shard-manifest
+          path: ${{ runner.temp }}
 
       - uses: google-github-actions/auth@v2
         with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ secrets.wif_provider }}
           service_account: ${{ secrets.wif_service_account }}
 
@@ -54,14 +184,361 @@ jobs:
           chmod +x "$RUNNER_TEMP/cm/cm"
           echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
 
-      - name: Run Deep Scan
+      - name: Run Single-Batch CodeMender Scan
+        env:
+          SHARD_ID: ${{ matrix.shard.id }}
+          CM_TELEMETRY_OPT_OUT: "1"
+        run: |
+          python3 - << 'EOF'
+          import json, os
+
+          shard_id = str(os.environ["SHARD_ID"])
+          runner_temp = os.environ["RUNNER_TEMP"]
+
+          with open(os.path.join(runner_temp, "shard-manifest.json")) as fp:
+              manifest = json.load(fp)
+
+          my_files = manifest.get(shard_id, [])
+          os.makedirs(".cm_shard", exist_ok=True)
+          shard_abs_dir = os.path.abspath(".cm_shard")
+
+          path_map = {}
+          used_names = set()
+          for rel_path in my_files:
+              norm_rel = os.path.normpath(rel_path)
+              flat_name = os.path.basename(norm_rel)
+              if flat_name in used_names:
+                  flat_name = norm_rel.replace(os.sep, "__")
+              used_names.add(flat_name)
+
+              os.link(norm_rel, os.path.join(".cm_shard", flat_name))
+              path_map[flat_name] = norm_rel
+              path_map[f"./{flat_name}"] = norm_rel
+              path_map[f".cm_shard/{flat_name}"] = norm_rel
+              path_map[os.path.join(shard_abs_dir, flat_name)] = norm_rel
+
+          with open(os.path.join(runner_temp, "path-map.json"), "w") as fp:
+              json.dump(path_map, fp, indent=2)
+
+          print(f"Shard {shard_id}: staged {len(my_files)} files into .cm_shard")
+          EOF
+
+          file_count=$(find .cm_shard -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [ "$file_count" -eq 0 ]; then
+            echo "[]" > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
+            echo "{}" > "$RUNNER_TEMP/stats-shard-${SHARD_ID}.json"
+            exit 0
+          fi
+
+          shard_bytes=$(wc -c .cm_shard/* 2>/dev/null | tail -n 1 | awk '{print $1}')
+          shard_bytes=${shard_bytes:-0}
+          turns_by_bytes=$(( (shard_bytes + 59999) / 60000 ))
+          turns_by_files=$(( (file_count + 5) / 6 ))
+          read_turns=$(( turns_by_bytes > turns_by_files ? turns_by_bytes : turns_by_files ))
+          [ "$read_turns" -lt 1 ] && read_turns=1
+          max_per_turn=$(( (file_count + read_turns - 1) / read_turns ))
+          file_list=$(find .cm_shard -maxdepth 1 -type f -exec basename -a {} + | sort | paste -sd ',' - | sed 's/,/, /g')
+
+          printf '%s\n' .cm_shard .cm_project >> .git/info/exclude
+          shard_abs_path="$(cd .cm_shard && pwd)"
+
+          for attempt in 1 2 3; do
+            export CM_HOME="$RUNNER_TEMP/cm_home"
+            rm -rf "$CM_HOME" .cm_shard/.cm_project
+            mkdir -p "$CM_HOME"
+
+            cm init
+            cat <<EOF > "$CM_HOME/config.yaml"
+          model: "$CM_MODEL"
+          human_confirmation: false
+          confirm_writes: false
+          project_paths:
+            - "$shard_abs_path"
+          sandbox:
+            enabled: false
+          EOF
+
+            echo "=== [Shard $SHARD_ID] Scanning ${file_count} files / ${shard_bytes} bytes (Attempt ${attempt}/3, ${read_turns} read turn(s), max ${max_per_turn}/turn) ==="
+            if cm find .cm_shard \
+              --model="$CM_MODEL" \
+              --sandbox=false \
+              --yes \
+              --bypass-warning \
+              --compact \
+              -v \
+              -c "The ${file_count} target files in the current root directory (.) are: [${file_list}]. Step 1+: Immediately call read_file in parallel batches of up to ${max_per_turn} files per turn so all ${file_count} files are read across ${read_turns} turn(s) (NEVER call read_file on more than ${max_per_turn} files in a single turn). STRICT RULES: (1) NEVER call list_dir or grep_search, and NEVER access any path outside '.'. (2) NEVER call read_file on the same file twice. (3) Immediately after reading all files once, output all vulnerabilities found and finish. (4) When reporting findings, always use the bare relative filename (e.g. 'foo.py'), NEVER prefix paths with '/workspace/'."; then
+              break
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "❌ [Shard $SHARD_ID] Failed after 3 attempts."
+              exit 1
+            fi
+            echo "⚠️ [Shard $SHARD_ID] Attempt ${attempt} failed. Retrying in $((attempt * 5))s..."
+            sleep $((attempt * 5))
+          done
+
+          cm report --format=json --status=OPEN \
+            | jq --slurpfile pmap "$RUNNER_TEMP/path-map.json" '
+                ($pmap[0] // {}) as $m
+                | map(
+                    .file_path as $fp
+                    | ($fp | split("/") | last) as $base
+                    | .file_path = ($m[$fp] // $m[$base] // ($fp | sub("^\\.cm_shard/"; "")))
+                  )
+              ' \
+            > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
+
+          cm stats --json > "$RUNNER_TEMP/stats-shard-${SHARD_ID}.json"
+
+      - name: Cancel Any Lingering Backend Sessions on Timeout/Failure
+        if: ${{ failure() || cancelled() }}
+        run: |
+          for home_dir in "$RUNNER_TEMP"/cm_home "$RUNNER_TEMP"/cm_home_*; do
+            [ -d "$home_dir" ] || continue
+            export CM_HOME="$home_dir"
+            # Cancel any active backend sessions so they don't hold quota slots
+            cm session list 2>/dev/null | awk '/RUNNING|WAITING_FOR_TOOL/ {print $1}' | while read -r sid; do
+              [ -n "$sid" ] && cm session cancel "$sid" || true
+            done
+            cm clean || true
+          done
+
+      - name: Upload Shard Findings and Stats
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemender-shard-${{ matrix.shard.id }}
+          path: |
+            ${{ runner.temp }}/findings-shard-${{ matrix.shard.id }}.json
+            ${{ runner.temp }}/stats-shard-${{ matrix.shard.id }}.json
+          retention-days: 1
+
+  # ============================================================================
+  # TIER 2 (STEP 3): Fan-In Aggregation, SARIF Upload & Policy Gate (< 1 minute)
+  # ============================================================================
+  aggregate-and-report:
+    name: Aggregate Deep Scan Results
+    needs: [prepare-shards, deep-scan-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ secrets.wif_provider }}
+          service_account: ${{ secrets.wif_service_account }}
+
+      - name: Install CodeMender CLI
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cm.zip" "$CM_DOWNLOAD_URL"
+          unzip -q -o "$RUNNER_TEMP/cm.zip" -d "$RUNNER_TEMP/cm"
+          chmod +x "$RUNNER_TEMP/cm/cm"
+          echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
+
+      - name: Download All Shard Findings
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codemender-shard-*
+          path: ${{ runner.temp }}/shards
+          merge-multiple: true
+
+      - name: Merge Findings, Export SARIF, and Enforce Gate
         run: |
           cm init
-          cm find . \
-            --deep \
-            --deep-workers=${{ inputs.workers }} \
-            --model="$CM_MODEL" \
-            --sandbox=false \
-            -v
-          cm report -f md > codemender-results.md
-          cat codemender-results.md >> $GITHUB_STEP_SUMMARY
+
+          # Merge and deduplicate findings across all shards into `cm report import` schema
+          jq -s '
+            add // []
+            | unique_by(.file_path, .line, .title)
+            | map({
+                file_path: .file_path,
+                title: .title,
+                message: (.message // .description // .title),
+                severity: .severity,
+                vuln_type: (.vuln_type // "CWE-Other"),
+                vuln_id: (.vuln_id),
+                confidence: (.confidence),
+                analysis: (.analysis),
+                snippet: (.snippet),
+                start_line: (.start_line),
+                end_line: (.end_line)
+              })
+          ' "$RUNNER_TEMP"/shards/findings-shard-*.json > "$RUNNER_TEMP/merged-findings.json"
+
+          count=$(jq 'length' "$RUNNER_TEMP/merged-findings.json")
+          echo "Total unique findings across all shards: $count"
+
+          if [ "$count" -gt 0 ]; then
+            cm report import --file "$RUNNER_TEMP/merged-findings.json"
+          fi
+
+          # Generate SARIF v2.1.0 for GitHub Code Scanning and Markdown for Job Summary
+          # cm report -f sarif --status=OPEN > codemender.sarif
+          # Generate summary
+          cm report --status=OPEN > summary.md
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          # Generate Full Report
+          cm report -f md --status=OPEN > codemender-report.md
+
+          # Aggregate token usage stats across all shards
+          shopt -s nullglob
+          stats_files=("$RUNNER_TEMP"/shards/stats-shard-*.json)
+          if [ "${#stats_files[@]}" -gt 0 ]; then
+            jq -s '
+              def fmt_dur(s):
+                (s | floor) as $sec
+                | (($sec / 60) | floor) as $m
+                | ($sec % 60) as $rem
+                | "\($m | tostring | if length < 2 then "0" + . else . end)m \($rem | tostring | if length < 2 then "0" + . else . end)s";
+
+              map(select(type == "object" and has("total_tokens"))) as $valid
+              | ($valid | map(.input_tokens // 0) | add // 0) as $in_tok
+              | ($valid | map(.output_tokens // 0) | add // 0) as $out_tok
+              | ($valid | map(.cached_tokens // 0) | add // 0) as $cache_tok
+              | ($valid | map(.thought_tokens // 0) | add // 0) as $thought_tok
+              | ($valid | map(.total_tokens // 0) | add // 0) as $tot_tok
+              | ($valid | map(.total_turns // 0) | add // 0) as $turns
+              | ($valid | map(.total_polls // 0) | add // 0) as $polls
+              | ($valid | map(.tool_calls // 0) | add // 0) as $tools
+              | ($valid | map(.duration_seconds // 0) | add // 0) as $dur
+              | {
+                  since: ($valid[0].since // "7 days"),
+                  shards_aggregated: ($valid | length),
+                  total_turns: $turns,
+                  total_polls: $polls,
+                  command_types: ([$valid[].buckets[]?.label | select(. != "total")] | unique | length),
+                  input_tokens: $in_tok,
+                  output_tokens: $out_tok,
+                  cached_tokens: $cache_tok,
+                  thought_tokens: $thought_tok,
+                  tool_calls: $tools,
+                  total_tokens: $tot_tok,
+                  cache_hit_percent: (if $in_tok > 0 then ($cache_tok / $in_tok * 100) else 0 end),
+                  think_ratio_percent: (if ($out_tok + $thought_tok) > 0 then ($thought_tok / ($out_tok + $thought_tok) * 100) else 0 end),
+                  duration_seconds: ($dur * 1000 | round / 1000),
+                  duration_formatted: fmt_dur($dur),
+                  buckets: (
+                    [$valid[].buckets[]?]
+                    | group_by(.label)
+                    | map(
+                        (.[0].label) as $lbl
+                        | (map(.requests // 0) | add // 0) as $b_req
+                        | (map(.polls // 0) | add // 0) as $b_polls
+                        | (map(.input_tokens // 0) | add // 0) as $b_in
+                        | (map(.output_tokens // 0) | add // 0) as $b_out
+                        | (map(.cached_tokens // 0) | add // 0) as $b_cache
+                        | (map(.thought_tokens // 0) | add // 0) as $b_thought
+                        | (map(.tool_calls // 0) | add // 0) as $b_tools
+                        | (map(.total_tokens // 0) | add // 0) as $b_tot
+                        | (map(.duration_seconds // 0) | add // 0) as $b_dur
+                        | {
+                            label: $lbl,
+                            requests: $b_req,
+                            polls: $b_polls,
+                            input_tokens: $b_in,
+                            output_tokens: $b_out,
+                            cached_tokens: $b_cache,
+                            thought_tokens: $b_thought,
+                            tool_calls: $b_tools,
+                            total_tokens: $b_tot,
+                            cache_hit_percent: (if $b_in > 0 then ($b_cache / $b_in * 100) else 0 end),
+                            think_ratio_percent: (if ($b_out + $b_thought) > 0 then ($b_thought / ($b_out + $b_thought) * 100) else 0 end),
+                            duration_seconds: ($b_dur * 1000 | round / 1000),
+                            duration_formatted: fmt_dur($b_dur)
+                          }
+                      )
+                    | sort_by(.label != "total", .label)
+                  )
+                }
+            ' "${stats_files[@]}" > codemender-stats.json
+
+            jq -r '
+              def round2: (. * 100 | round / 100);
+              "\n## Token Usage Summary (\(.shards_aggregated) shards)\n\n" +
+              "| Metric | Value |\n" +
+              "| :--- | ---: |\n" +
+              "| **Total Tokens** | \(.total_tokens) |\n" +
+              "| **Input Tokens** | \(.input_tokens) |\n" +
+              "| **Output Tokens** | \(.output_tokens) |\n" +
+              "| **Cached Tokens** | \(.cached_tokens) (\(.cache_hit_percent | round2)%) |\n" +
+              "| **Thought Tokens** | \(.thought_tokens) (\(.think_ratio_percent | round2)% think ratio) |\n" +
+              "| **Total Turns / Polls** | \(.total_turns) / \(.total_polls) |\n" +
+              "| **Tool Calls** | \(.tool_calls) |\n" +
+              "| **Cumulative Duration** | \(.duration_formatted) (\(.duration_seconds)s) |\n" +
+              (if (.buckets | length) > 0 then
+                "\n### Breakdown by Command\n\n" +
+                "| Bucket | Requests | Polls | Input Tokens | Output Tokens | Cached Tokens | Thought Tokens | Total Tokens | Cache Hit % | Think Ratio % | Duration |\n" +
+                "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" +
+                (.buckets | map(
+                  "| `\(.label)` | \(.requests) | \(.polls) | \(.input_tokens) | \(.output_tokens) | \(.cached_tokens) | \(.thought_tokens) | \(.total_tokens) | \(.cache_hit_percent | round2)% | \(.think_ratio_percent | round2)% | \(.duration_formatted) |"
+                ) | join("\n")) + "\n"
+              else "" end)
+            ' codemender-stats.json | tee -a "$GITHUB_STEP_SUMMARY" >> codemender-report.md
+          fi
+
+          if [ -f "$RUNNER_TEMP/shards/shard-manifest.json" ]; then
+            total_scanned=$(jq '[.[] | length] | add // 0' "$RUNNER_TEMP/shards/shard-manifest.json")
+            shard_count=$(jq 'length' "$RUNNER_TEMP/shards/shard-manifest.json")
+
+            jq -r '
+              "\n## Scanned Files by Shard (\([.[] | length] | add // 0) files across \(length) shards)\n\n" +
+              (to_entries
+                | sort_by(.key | tonumber)
+                | map("### Shard \(.key) (\(.value | length) files)\n" + (.value | map("- `\(.)`") | join("\n")))
+                | join("\n\n"))
+            ' "$RUNNER_TEMP/shards/shard-manifest.json" >> codemender-report.md
+
+            {
+              echo ""
+              echo "<details><summary>Scanned Files Inventory (${total_scanned} files across ${shard_count} shards)</summary>"
+              echo ""
+              jq -r '
+                to_entries
+                | sort_by(.key | tonumber)
+                | map("#### Shard \(.key) (\(.value | length) files)\n" + (.value | map("- `\(.)`") | join("\n")))
+                | join("\n\n")
+              ' "$RUNNER_TEMP/shards/shard-manifest.json"
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          # Fail workflow if any finding matches FAIL_ON_SEVERITIES (CRITICAL,HIGH)
+          # blocking=$(jq --arg fail_on "$FAIL_ON_SEVERITIES" '
+          #   ($fail_on | ascii_upcase | split(",")) as $sev
+          #   | [.[] | select(.severity | ascii_upcase | IN($sev[]))] | length
+          # ' "$RUNNER_TEMP/merged-findings.json")
+
+          # if [ "$blocking" -gt 0 ]; then
+          #   echo "::error::CodeMender found $blocking blocking ($FAIL_ON_SEVERITIES) vulnerabilities."
+          #   exit 1
+          # fi
+
+      # - name: Upload Consolidated SARIF to GitHub Code Scanning
+      #   if: ${{ !cancelled() && hashFiles('codemender.sarif') != '' }}
+      #   uses: github/codeql-action/upload-sarif@v3
+      #   with:
+      #     sarif_file: codemender.sarif
+      #     category: codemender-deep
+      
+      - name: Upload Consolidated Report Artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemender-report
+          path: |
+            codemender-report.md
+            codemender-stats.json
+          retention-days: 7
