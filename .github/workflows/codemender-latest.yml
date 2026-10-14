@@ -228,6 +228,7 @@ jobs:
           file_count=$(find .cm_shard -maxdepth 1 -type f | wc -l | tr -d ' ')
           if [ "$file_count" -eq 0 ]; then
             echo "[]" > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
+            echo "{}" > "$RUNNER_TEMP/stats-shard-${SHARD_ID}.json"
             exit 0
           fi
 
@@ -288,6 +289,8 @@ jobs:
               ' \
             > "$RUNNER_TEMP/findings-shard-${SHARD_ID}.json"
 
+          cm stats --json > "$RUNNER_TEMP/stats-shard-${SHARD_ID}.json"
+
       - name: Cancel Any Lingering Backend Sessions on Timeout/Failure
         if: ${{ failure() || cancelled() }}
         run: |
@@ -301,12 +304,14 @@ jobs:
             cm clean || true
           done
 
-      - name: Upload Shard Findings
+      - name: Upload Shard Findings and Stats
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: codemender-shard-${{ matrix.shard.id }}
-          path: ${{ runner.temp }}/findings-shard-${{ matrix.shard.id }}.json
+          path: |
+            ${{ runner.temp }}/findings-shard-${{ matrix.shard.id }}.json
+            ${{ runner.temp }}/stats-shard-${{ matrix.shard.id }}.json
           retention-days: 1
 
   # ============================================================================
@@ -387,6 +392,102 @@ jobs:
           # Generate Full Report
           cm report -f md --status=OPEN > codemender-report.md
 
+          # Aggregate token usage stats across all shards
+          shopt -s nullglob
+          stats_files=("$RUNNER_TEMP"/shards/stats-shard-*.json)
+          if [ "${#stats_files[@]}" -gt 0 ]; then
+            jq -s '
+              def fmt_dur(s):
+                (s | floor) as $sec
+                | (($sec / 60) | floor) as $m
+                | ($sec % 60) as $rem
+                | "\($m | tostring | if length < 2 then "0" + . else . end)m \($rem | tostring | if length < 2 then "0" + . else . end)s";
+
+              map(select(type == "object" and has("total_tokens"))) as $valid
+              | ($valid | map(.input_tokens // 0) | add // 0) as $in_tok
+              | ($valid | map(.output_tokens // 0) | add // 0) as $out_tok
+              | ($valid | map(.cached_tokens // 0) | add // 0) as $cache_tok
+              | ($valid | map(.thought_tokens // 0) | add // 0) as $thought_tok
+              | ($valid | map(.total_tokens // 0) | add // 0) as $tot_tok
+              | ($valid | map(.total_turns // 0) | add // 0) as $turns
+              | ($valid | map(.total_polls // 0) | add // 0) as $polls
+              | ($valid | map(.tool_calls // 0) | add // 0) as $tools
+              | ($valid | map(.duration_seconds // 0) | add // 0) as $dur
+              | {
+                  since: ($valid[0].since // "7 days"),
+                  shards_aggregated: ($valid | length),
+                  total_turns: $turns,
+                  total_polls: $polls,
+                  command_types: ([$valid[].buckets[]?.label | select(. != "total")] | unique | length),
+                  input_tokens: $in_tok,
+                  output_tokens: $out_tok,
+                  cached_tokens: $cache_tok,
+                  thought_tokens: $thought_tok,
+                  tool_calls: $tools,
+                  total_tokens: $tot_tok,
+                  cache_hit_percent: (if $in_tok > 0 then ($cache_tok / $in_tok * 100) else 0 end),
+                  think_ratio_percent: (if ($out_tok + $thought_tok) > 0 then ($thought_tok / ($out_tok + $thought_tok) * 100) else 0 end),
+                  duration_seconds: ($dur * 1000 | round / 1000),
+                  duration_formatted: fmt_dur($dur),
+                  buckets: (
+                    [$valid[].buckets[]?]
+                    | group_by(.label)
+                    | map(
+                        (.[0].label) as $lbl
+                        | (map(.requests // 0) | add // 0) as $b_req
+                        | (map(.polls // 0) | add // 0) as $b_polls
+                        | (map(.input_tokens // 0) | add // 0) as $b_in
+                        | (map(.output_tokens // 0) | add // 0) as $b_out
+                        | (map(.cached_tokens // 0) | add // 0) as $b_cache
+                        | (map(.thought_tokens // 0) | add // 0) as $b_thought
+                        | (map(.tool_calls // 0) | add // 0) as $b_tools
+                        | (map(.total_tokens // 0) | add // 0) as $b_tot
+                        | (map(.duration_seconds // 0) | add // 0) as $b_dur
+                        | {
+                            label: $lbl,
+                            requests: $b_req,
+                            polls: $b_polls,
+                            input_tokens: $b_in,
+                            output_tokens: $b_out,
+                            cached_tokens: $b_cache,
+                            thought_tokens: $b_thought,
+                            tool_calls: $b_tools,
+                            total_tokens: $b_tot,
+                            cache_hit_percent: (if $b_in > 0 then ($b_cache / $b_in * 100) else 0 end),
+                            think_ratio_percent: (if ($b_out + $b_thought) > 0 then ($b_thought / ($b_out + $b_thought) * 100) else 0 end),
+                            duration_seconds: ($b_dur * 1000 | round / 1000),
+                            duration_formatted: fmt_dur($b_dur)
+                          }
+                      )
+                    | sort_by(.label != "total", .label)
+                  )
+                }
+            ' "${stats_files[@]}" > codemender-stats.json
+
+            jq -r '
+              def round2: (. * 100 | round / 100);
+              "\n## Token Usage Summary (\(.shards_aggregated) shards)\n\n" +
+              "| Metric | Value |\n" +
+              "| :--- | ---: |\n" +
+              "| **Total Tokens** | \(.total_tokens) |\n" +
+              "| **Input Tokens** | \(.input_tokens) |\n" +
+              "| **Output Tokens** | \(.output_tokens) |\n" +
+              "| **Cached Tokens** | \(.cached_tokens) (\(.cache_hit_percent | round2)%) |\n" +
+              "| **Thought Tokens** | \(.thought_tokens) (\(.think_ratio_percent | round2)% think ratio) |\n" +
+              "| **Total Turns / Polls** | \(.total_turns) / \(.total_polls) |\n" +
+              "| **Tool Calls** | \(.tool_calls) |\n" +
+              "| **Cumulative Duration** | \(.duration_formatted) (\(.duration_seconds)s) |\n" +
+              (if (.buckets | length) > 0 then
+                "\n### Breakdown by Command\n\n" +
+                "| Bucket | Requests | Polls | Input Tokens | Output Tokens | Cached Tokens | Thought Tokens | Total Tokens | Cache Hit % | Think Ratio % | Duration |\n" +
+                "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n" +
+                (.buckets | map(
+                  "| `\(.label)` | \(.requests) | \(.polls) | \(.input_tokens) | \(.output_tokens) | \(.cached_tokens) | \(.thought_tokens) | \(.total_tokens) | \(.cache_hit_percent | round2)% | \(.think_ratio_percent | round2)% | \(.duration_formatted) |"
+                ) | join("\n")) + "\n"
+              else "" end)
+            ' codemender-stats.json | tee -a "$GITHUB_STEP_SUMMARY" >> codemender-report.md
+          fi
+
           if [ -f "$RUNNER_TEMP/shards/shard-manifest.json" ]; then
             total_scanned=$(jq '[.[] | length] | add // 0' "$RUNNER_TEMP/shards/shard-manifest.json")
             shard_count=$(jq 'length' "$RUNNER_TEMP/shards/shard-manifest.json")
@@ -437,5 +538,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: codemender-report
-          path: codemender-report.md
+          path: |
+            codemender-report.md
+            codemender-stats.json
           retention-days: 7
