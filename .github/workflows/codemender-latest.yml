@@ -13,6 +13,10 @@ on:
         required: false
         type: string
         default: '250'
+      model:
+          required: false
+          type: string
+          default: gemini-4-argon
     secrets:
       wif_provider:
           required: true
@@ -32,7 +36,7 @@ defaults:
 
 env:
   CM_DOWNLOAD_URL: https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3Astable%3Acm-linux-amd64.zip:download?alt=media
-  CM_MODEL: gemini-3.8-flash
+  CM_MODEL: ${{ inputs.model }}
   FAIL_ON_SEVERITIES: CRITICAL,HIGH
 
 jobs:
