@@ -7,6 +7,10 @@ on:
         type: string
         required: false
         default: gemini-3.8-flash
+      workers:
+          type: number
+          required: false
+          default: 16
     secrets:
       wif_provider:
           required: true
@@ -54,8 +58,8 @@ jobs:
         run: |
           cm init
           cm find . \
-            --deep="origin/$BASE_REF" \
-            --deep-workers=16 \
+            --deep
+            --deep-workers=${{ inputs.workers }} \
             --model="$CM_MODEL" \
             --sandbox=false
           cm report -f md > codemender-results.md
