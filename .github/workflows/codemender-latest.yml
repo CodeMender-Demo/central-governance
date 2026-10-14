@@ -9,10 +9,10 @@ on:
         default: '120'
   workflow_call:
     inputs:
-      # shards:
-      #   required: false
-      #   type: string
-      #   default: '250'
+      shards:
+        required: false
+        type: string
+        default: '250'
       model:
           required: false
           type: string
@@ -60,8 +60,8 @@ jobs:
 
       - name: Partition files evenly across shards
         id: shard
-        # env:
-        #   NUM_SHARDS: ${{ inputs.shards || '20' }}
+        env:
+          NUM_SHARDS: ${{ inputs.shards || '20' }}
         run: |
           python3 - << 'EOF'
           import json, os, pathlib
@@ -235,7 +235,7 @@ jobs:
           shard_bytes=$(wc -c .cm_shard/* 2>/dev/null | tail -n 1 | awk '{print $1}')
           read_turns=$(( (file_count + 14) / 15 ))
           max_per_turn=$(( (file_count + read_turns - 1) / read_turns ))
-          file_list=$(find .cm_shard -maxdepth 1 -type f -exec basename {} + | sort | paste -sd ',' - | sed 's/,/, /g')
+          file_list=$(find .cm_shard -maxdepth 1 -type f -exec basename -a {} + | sort | paste -sd ',' - | sed 's/,/, /g')
 
           printf '%s\n' .cm_shard .cm_project >> .git/info/exclude
           shard_abs_path="$(cd .cm_shard && pwd)"
