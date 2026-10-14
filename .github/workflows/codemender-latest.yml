@@ -1,18 +1,8 @@
 name: CodeMender Security Scan
     
 on:
-  workflow_dispatch:
-    inputs:
-      shards:
-        description: 'Number of parallel runners for Deep Scan'
-        required: false
-        default: '120'
   workflow_call:
     inputs:
-      shards:
-        required: false
-        type: string
-        default: '250'
       model:
           required: false
           type: string
@@ -60,8 +50,6 @@ jobs:
 
       - name: Partition files evenly across shards
         id: shard
-        env:
-          NUM_SHARDS: ${{ inputs.shards || '20' }}
         run: |
           python3 - << 'EOF'
           import json, os, pathlib
@@ -104,8 +92,12 @@ jobs:
                       all_files.append((rel_path, size))
 
           total_files = len(all_files)
-          calculated_shards = (total_files + 14) // 15
-          num_shards = max(10, min(250, calculated_shards))
+          total_bytes = sum(size for _, size in all_files)
+          max_shards = 250
+          shards_by_bytes = (total_bytes + 119_999) // 120_000  # ~120KB per shard target
+          shards_by_files = (total_files + 29) // 30            # up to 30 files per shard target
+          calculated_shards = max(shards_by_bytes, shards_by_files)
+          num_shards = max(10, min(max_shards, calculated_shards))
           max_files_per_shard = max(15, (total_files + num_shards - 1) // num_shards)
 
           # Sort largest files first (LPT) and distribute across N shards by byte_weight first
@@ -113,7 +105,7 @@ jobs:
           shards = [{"id": i, "file_count": 0, "byte_weight": 0, "files": []} for i in range(num_shards)]
 
           for rel_path, size in all_files:
-              # Prefer shards under max_files_per_shard (15), then lowest byte_weight, then lowest file_count
+              # Prefer shards under max_files_per_shard, then lowest byte_weight, then lowest file_count
               target = min(
                   shards,
                   key=lambda s: (s["file_count"] >= max_files_per_shard, s["byte_weight"], s["file_count"], s["id"])
@@ -125,7 +117,7 @@ jobs:
           active_shards = [s for s in shards if s["file_count"] > 0]
           matrix_shards = [{"id": s["id"], "file_count": s["file_count"]} for s in active_shards]
           print(
-              f"Created {len(active_shards)} shards ({total_files} files, "
+              f"Created {len(active_shards)} shards ({total_files} files, {total_bytes} bytes, "
               f"{skipped_large} oversized files >{max_file_bytes}B skipped). "
               f"File counts: {[s['file_count'] for s in active_shards]}"
           )
@@ -233,7 +225,11 @@ jobs:
           fi
 
           shard_bytes=$(wc -c .cm_shard/* 2>/dev/null | tail -n 1 | awk '{print $1}')
-          read_turns=$(( (file_count + 14) / 15 ))
+          shard_bytes=${shard_bytes:-0}
+          turns_by_bytes=$(( (shard_bytes + 79999) / 80000 ))
+          turns_by_files=$(( (file_count + 29) / 30 ))
+          read_turns=$(( turns_by_bytes > turns_by_files ? turns_by_bytes : turns_by_files ))
+          [ "$read_turns" -lt 1 ] && read_turns=1
           max_per_turn=$(( (file_count + read_turns - 1) / read_turns ))
           file_list=$(find .cm_shard -maxdepth 1 -type f -exec basename -a {} + | sort | paste -sd ',' - | sed 's/,/, /g')
 
