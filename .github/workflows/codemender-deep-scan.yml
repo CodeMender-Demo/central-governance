@@ -58,7 +58,7 @@ jobs:
         run: |
           cm init
           cm find . \
-            --deep
+            --deep \
             --deep-workers=${{ inputs.workers }} \
             --model="$CM_MODEL" \
             --sandbox=false
