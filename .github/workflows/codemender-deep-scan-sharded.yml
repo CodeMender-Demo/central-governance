@@ -1,0 +1,160 @@
+name: CodeMender Deep Scan (Sharded)
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: "CodeMender reasoning model"
+        required: false
+        default: "gemini-4-argon"
+        type: string
+      workers:
+        description: "Concurrent deep-scan workers per shard"
+        required: false
+        default: "10"
+        type: string
+    secrets:
+      wif_provider:
+          required: true
+      wif_service_account:
+          required: true
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+env:
+  CM_DOWNLOAD_URL: https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3Astable%3Acm-linux-amd64.zip:download?alt=media
+  CM_MODEL: ${{ inputs.model || 'gemini-4-argon' }}
+  CM_WORKERS: ${{ inputs.workers || '10' }}
+
+jobs:
+  deep-scan-shard:
+    name: CodeMender Deep Scan (Shard ${{ matrix.shard }}/10)
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1 # Shallow clone is sufficient for --deep and faster than fetch-depth: 0
+          persist-credentials: false
+      
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.wif_provider }}
+          service_account: ${{ secrets.wif_service_account }}
+          create_credentials_file: true
+          export_environment_variables: true
+      
+      - name: Install CodeMender CLI
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cm.zip" "$CM_DOWNLOAD_URL"
+          unzip -q -o "$RUNNER_TEMP/cm.zip" -d "$RUNNER_TEMP/cm"
+          chmod +x "$RUNNER_TEMP/cm/cm"
+          echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
+      
+      - name: Initialize CodeMender & Configure Shard ${{ matrix.shard }}/10
+        env:
+          SHARD_INDEX: ${{ matrix.shard }}
+          TOTAL_SHARDS: "10"
+        run: |
+          cm init
+          # Partition second-level module directories (e.g. apps/admin-console, domains/clearing)
+          # and top-level standalone files/dirs across 10 balanced shards.
+          # Non-assigned units are added to scan.exclude_dirs in config.yaml so full repo
+          # context stays on disk while cm find . --deep only audits this shard's files.
+          python3 - << 'EOF'
+          import os
+          from pathlib import Path
+          shard_idx = int(os.environ["SHARD_INDEX"]) - 1
+          total_shards = int(os.environ["TOTAL_SHARDS"])
+          ignore_roots = {".git", ".github", ".codemender", ".cm_project", "node_modules", "vendor", "dist", "bin", "target", "obj", "build", ".gradle"}
+          units = []
+          for top in sorted(Path(".").iterdir()):
+              if top.name.startswith(".") or top.name in ignore_roots or not top.is_dir():
+                  continue
+              subdirs = sorted([d for d in top.iterdir() if d.is_dir() and not d.name.startswith(".")])
+              if subdirs:
+                  for sd in subdirs:
+                      units.append(sd.as_posix())
+                  # Also handle any files directly under top/ (e.g., apps/index.ts)
+                  top_files = [f for f in top.iterdir() if f.is_file()]
+                  if top_files:
+                      units.append(f"__files__:{top.as_posix()}")
+              else:
+                  units.append(top.as_posix())
+          exclude_dirs = [
+              "node_modules", "vendor", "dist", "bin",
+              "target", "obj", "build", ".gradle"
+          ]
+          assigned = []
+          for i, u in enumerate(units):
+              if i % total_shards == shard_idx:
+                  assigned.append(u)
+              else:
+                  if u.startswith("__files__:"):
+                      top_dir = u.split(":", 1)[1]
+                      for f in Path(top_dir).iterdir():
+                          if f.is_file():
+                              f.unlink()
+                  else:
+                      exclude_dirs.append(u)
+          print(f"Shard {shard_idx + 1}/{total_shards} assigned {len(assigned)}/{len(units)} module units:")
+          for a in assigned:
+              print(f"  + {a}")
+          with open("config.yaml", "w") as f:
+              f.write("scan:\n  exclude_dirs:\n")
+              for d in exclude_dirs:
+                  f.write(f"    - \"{d}\"\n")
+          EOF
+      
+      - name: Run CodeMender Deep Scan (Shard ${{ matrix.shard }}/10)
+        run: |
+          cm find . \
+            --deep \
+            --deep-workers="$CM_WORKERS" \
+            --model="$CM_MODEL" \
+            --sandbox=false \
+            --compact \
+            -v
+          cm report -f md > "codemender-results-shard-${{ matrix.shard }}.md"
+          cm report -f json > "codemender-results-shard-${{ matrix.shard }}.json"
+          cat "codemender-results-shard-${{ matrix.shard }}.md" >> "$GITHUB_STEP_SUMMARY"
+      
+      - name: Upload Shard Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemender-report-shard-${{ matrix.shard }}
+          path: |
+            codemender-results-shard-${{ matrix.shard }}.md
+            codemender-results-shard-${{ matrix.shard }}.json
+          retention-days: 7
+  
+  aggregate-results:
+    name: Aggregate CodeMender Results
+    needs: deep-scan-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download All Shard Reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codemender-report-shard-*
+          path: shard-reports
+          merge-multiple: true
+      
+      - name: Publish Combined Report Summary
+        run: |
+          echo "# CodeMender Deep Scan — Combined Report (10 Shards)" >> "$GITHUB_STEP_SUMMARY"
+          for i in $(seq 1 10); do
+            if [ -f "shard-reports/codemender-results-shard-${i}.md" ]; then
+              echo -e "\n## Shard ${i}/10\n" >> "$GITHUB_STEP_SUMMARY"
+              cat "shard-reports/codemender-results-shard-${i}.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
