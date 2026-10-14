@@ -1,0 +1,62 @@
+name: CodeMender Security Scan
+    
+on:
+  workflow_call:
+    inputs:
+      model:
+        type: string
+        required: false
+        default: gemini-3.8-flash
+    secrets:
+      wif_provider:
+          required: true
+      wif_service_account:
+          required: true
+
+permissions:
+    contents: read
+    id-token: write
+    pull-requests: write
+    security-events: write
+
+env:
+  CM_DOWNLOAD_URL: https://artifactregistry.googleapis.com/download/v1/projects/cmoc-prod/locations/us/repositories/codemender-cli-production/files/cm%3Astable%3Acm-linux-amd64.zip:download?alt=media
+  CM_MODEL: ${{ inputs.model }}
+
+jobs:
+  cm-deep-scan:
+    name: CodeMender Deep Scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.wif_provider }}
+          service_account: ${{ secrets.wif_service_account }}
+
+      - name: Install CodeMender CLI
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cm.zip" "$CM_DOWNLOAD_URL"
+          unzip -q -o "$RUNNER_TEMP/cm.zip" -d "$RUNNER_TEMP/cm"
+          chmod +x "$RUNNER_TEMP/cm/cm"
+          echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
+
+      - name: Run Deep Scan
+        run: |
+          cm init
+          cm find . \
+            --deep="origin/$BASE_REF" \
+            --deep-workers=16 \
+            --model="$CM_MODEL" \
+            --sandbox=false
+          cm report -f md > codemender-results.md
+          cat codemender-results.md >> $GITHUB_STEP_SUMMARY
