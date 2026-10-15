@@ -55,7 +55,7 @@ jobs:
           unzip -q -o "$RUNNER_TEMP/cm.zip" -d "$RUNNER_TEMP/cm"
           chmod +x "$RUNNER_TEMP/cm/cm"
           echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
-      - name: Partition Repo by File Count & Size (Shard ${{ matrix.shard }}/10)
+      - name: Configure .cmignore for Shard ${{ matrix.shard }}/10 (Keep All Files on Disk)
         env:
           SHARD_INDEX: ${{ matrix.shard }}
           TOTAL_SHARDS: "10"
@@ -63,10 +63,10 @@ jobs:
           python3 - << 'EOF'
           import heapq
           import os
+          from collections import defaultdict
           from pathlib import Path
           shard_idx = int(os.environ["SHARD_INDEX"]) - 1
           total_shards = int(os.environ["TOTAL_SHARDS"])
-          # Match CodeMender's default include/exclude rules
           include_exts = {
               ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
               ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".cs", ".rs", ".kt", ".kts",
@@ -77,47 +77,68 @@ jobs:
               ".git", ".github", ".codemender", ".cm_project",
               "node_modules", "vendor", "dist", "bin", "target", "obj", "build", ".gradle"
           }
-          candidates = []
+          # 1. Discover all scannable files and group them by leaf directory (package/module)
+          dir_groups = defaultdict(list)
+          total_files = 0
           for root, dirs, files in os.walk("."):
               dirs[:] = sorted(d for d in dirs if d not in exclude_dirs and not d.startswith("."))
-              for fname in files:
+              for fname in sorted(files):
                   if fname.endswith(exclude_suffixes):
                       continue
                   ext = os.path.splitext(fname)[1].lower()
                   if ext in include_exts:
                       fpath = Path(root) / fname
                       if not fpath.is_symlink():
-                          candidates.append((fpath.stat().st_size, fpath.as_posix()))
-          # Sort largest files first (with path tie-breaker for 100% determinism across runners)
-          candidates.sort(key=lambda x: (-x[0], x[1]))
-          # Min-heap keyed by (file_count, total_bytes, shard_id)
-          # Ensures every shard gets the exact same file count (+/- 1) AND balanced total bytes
+                          rel_dir = Path(root).as_posix()
+                          dir_groups[rel_dir].append((fpath.stat().st_size, fpath.as_posix()))
+                          total_files += 1
+          # 2. Build work units: keep sibling files in the same leaf directory together
+          # for taint locality, unless a single directory holds > (total_files / total_shards)
+          # files (e.g., a flat repo), in which case split that directory into individual files.
+          max_unit_files = max(1, total_files // (total_shards * 2))
+          units = []  # Each unit: (file_count, total_bytes, sort_key, [file_paths])
+          for rel_dir, flist in dir_groups.items():
+              if len(flist) <= max_unit_files:
+                  u_bytes = sum(s for s, _ in flist)
+                  u_paths = [p for _, p in flist]
+                  units.append((len(flist), u_bytes, rel_dir, u_paths))
+              else:
+                  for size_bytes, fpath in flist:
+                      units.append((1, size_bytes, fpath, [fpath]))
+          # 3. Sort largest units first (by file count, then byte size, then path for determinism)
+          units.sort(key=lambda u: (-u[0], -u[1], u[2]))
+          # 4. Deal units into 10 shards using a min-heap keyed by (file_count, total_bytes, shard_id)
           heap = [(0, 0, i) for i in range(total_shards)]
           heapq.heapify(heap)
           kept_files = 0
           kept_bytes = 0
-          removed_files = 0
-          for size_bytes, rel_path in candidates:
+          ignored_paths = []
+          for u_count, u_bytes, _, u_paths in units:
               count, tot_bytes, target_shard = heapq.heappop(heap)
               if target_shard == shard_idx:
-                  kept_files += 1
-                  kept_bytes += size_bytes
+                  kept_files += u_count
+                  kept_bytes += u_bytes
               else:
-                  os.unlink(rel_path)
-                  removed_files += 1
-              heapq.heappush(heap, (count + 1, tot_bytes + size_bytes, target_shard))
-          # Prune empty directories left behind so directory traversal stays fast
-          for root, dirs, files in os.walk(".", topdown=False):
-              if any(part in exclude_dirs or part.startswith(".") for part in Path(root).parts):
-                  continue
-              if root != "." and not os.listdir(root):
-                  os.rmdir(root)
+                  ignored_paths.extend(u_paths)
+              heapq.heappush(heap, (count + u_count, tot_bytes + u_bytes, target_shard))
+          # 5. Append non-shard file paths to .cmignore instead of deleting from disk
+          existing_ignore = ""
+          if os.path.exists(".cmignore"):
+              with open(".cmignore", "r") as f:
+                  existing_ignore = f.read().rstrip("\n") + "\n"
+          with open(".cmignore", "w") as f:
+              if existing_ignore:
+                  f.write(existing_ignore)
+              f.write(f"# Auto-generated exclusions for shard {shard_idx + 1}/{total_shards}\n")
+              for p in sorted(ignored_paths):
+                  f.write(f"{p}\n")
           print(
-              f"Shard {shard_idx + 1}/{total_shards} ready: "
-              f"kept {kept_files}/{len(candidates)} scannable files ({kept_bytes / 1024:.1f} KB), "
-              f"removed {removed_files} files."
+              f"Shard {shard_idx + 1}/{total_shards} configured via .cmignore: "
+              f"scanning {kept_files}/{total_files} files ({kept_bytes / 1024:.1f} KB), "
+              f"ignoring {len(ignored_paths)} files (all {total_files} files remain on disk)."
           )
           EOF
+
       - name: Run CodeMender Deep Scan (Shard ${{ matrix.shard }}/10)
         run: |
           cm init
