@@ -40,92 +40,96 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1 # Shallow clone is sufficient for --deep and faster than fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
-      
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.wif_provider }}
-          service_account: ${{ secrets.wif_service_account }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
           create_credentials_file: true
           export_environment_variables: true
-      
       - name: Install CodeMender CLI
         run: |
           curl -fsSL -o "$RUNNER_TEMP/cm.zip" "$CM_DOWNLOAD_URL"
           unzip -q -o "$RUNNER_TEMP/cm.zip" -d "$RUNNER_TEMP/cm"
           chmod +x "$RUNNER_TEMP/cm/cm"
           echo "$RUNNER_TEMP/cm" >> "$GITHUB_PATH"
-      
-      - name: Initialize CodeMender & Configure Shard ${{ matrix.shard }}/10
+      - name: Partition Repo by File Count & Size (Shard ${{ matrix.shard }}/10)
         env:
           SHARD_INDEX: ${{ matrix.shard }}
           TOTAL_SHARDS: "10"
         run: |
-          cm init
-          # Partition second-level module directories (e.g. apps/admin-console, domains/clearing)
-          # and top-level standalone files/dirs across 10 balanced shards.
-          # Non-assigned units are added to scan.exclude_dirs in config.yaml so full repo
-          # context stays on disk while cm find . --deep only audits this shard's files.
           python3 - << 'EOF'
+          import heapq
           import os
           from pathlib import Path
           shard_idx = int(os.environ["SHARD_INDEX"]) - 1
           total_shards = int(os.environ["TOTAL_SHARDS"])
-          ignore_roots = {".git", ".github", ".codemender", ".cm_project", "node_modules", "vendor", "dist", "bin", "target", "obj", "build", ".gradle"}
-          units = []
-          for top in sorted(Path(".").iterdir()):
-              if top.name.startswith(".") or top.name in ignore_roots or not top.is_dir():
+          # Match CodeMender's default include/exclude rules
+          include_exts = {
+              ".py", ".java", ".go", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+              ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".cs", ".rs", ".kt", ".kts",
+              ".rb", ".php", ".sol", ".tf", ".hcl"
+          }
+          exclude_suffixes = (".min.js", ".generated.go", ".pb.go")
+          exclude_dirs = {
+              ".git", ".github", ".codemender", ".cm_project",
+              "node_modules", "vendor", "dist", "bin", "target", "obj", "build", ".gradle"
+          }
+          candidates = []
+          for root, dirs, files in os.walk("."):
+              dirs[:] = sorted(d for d in dirs if d not in exclude_dirs and not d.startswith("."))
+              for fname in files:
+                  if fname.endswith(exclude_suffixes):
+                      continue
+                  ext = os.path.splitext(fname)[1].lower()
+                  if ext in include_exts:
+                      fpath = Path(root) / fname
+                      if not fpath.is_symlink():
+                          candidates.append((fpath.stat().st_size, fpath.as_posix()))
+          # Sort largest files first (with path tie-breaker for 100% determinism across runners)
+          candidates.sort(key=lambda x: (-x[0], x[1]))
+          # Min-heap keyed by (file_count, total_bytes, shard_id)
+          # Ensures every shard gets the exact same file count (+/- 1) AND balanced total bytes
+          heap = [(0, 0, i) for i in range(total_shards)]
+          heapq.heapify(heap)
+          kept_files = 0
+          kept_bytes = 0
+          removed_files = 0
+          for size_bytes, rel_path in candidates:
+              count, tot_bytes, target_shard = heapq.heappop(heap)
+              if target_shard == shard_idx:
+                  kept_files += 1
+                  kept_bytes += size_bytes
+              else:
+                  os.unlink(rel_path)
+                  removed_files += 1
+              heapq.heappush(heap, (count + 1, tot_bytes + size_bytes, target_shard))
+          # Prune empty directories left behind so directory traversal stays fast
+          for root, dirs, files in os.walk(".", topdown=False):
+              if any(part in exclude_dirs or part.startswith(".") for part in Path(root).parts):
                   continue
-              subdirs = sorted([d for d in top.iterdir() if d.is_dir() and not d.name.startswith(".")])
-              if subdirs:
-                  for sd in subdirs:
-                      units.append(sd.as_posix())
-                  # Also handle any files directly under top/ (e.g., apps/index.ts)
-                  top_files = [f for f in top.iterdir() if f.is_file()]
-                  if top_files:
-                      units.append(f"__files__:{top.as_posix()}")
-              else:
-                  units.append(top.as_posix())
-          exclude_dirs = [
-              "node_modules", "vendor", "dist", "bin",
-              "target", "obj", "build", ".gradle"
-          ]
-          assigned = []
-          for i, u in enumerate(units):
-              if i % total_shards == shard_idx:
-                  assigned.append(u)
-              else:
-                  if u.startswith("__files__:"):
-                      top_dir = u.split(":", 1)[1]
-                      for f in Path(top_dir).iterdir():
-                          if f.is_file():
-                              f.unlink()
-                  else:
-                      exclude_dirs.append(u)
-          print(f"Shard {shard_idx + 1}/{total_shards} assigned {len(assigned)}/{len(units)} module units:")
-          for a in assigned:
-              print(f"  + {a}")
-          with open("config.yaml", "w") as f:
-              f.write("scan:\n  exclude_dirs:\n")
-              for d in exclude_dirs:
-                  f.write(f"    - \"{d}\"\n")
+              if root != "." and not os.listdir(root):
+                  os.rmdir(root)
+          print(
+              f"Shard {shard_idx + 1}/{total_shards} ready: "
+              f"kept {kept_files}/{len(candidates)} scannable files ({kept_bytes / 1024:.1f} KB), "
+              f"removed {removed_files} files."
+          )
           EOF
-      
       - name: Run CodeMender Deep Scan (Shard ${{ matrix.shard }}/10)
         run: |
+          cm init
           cm find . \
             --deep \
             --deep-workers="$CM_WORKERS" \
             --model="$CM_MODEL" \
             --sandbox=false \
-            --compact \
             -v
           cm report -f md > "codemender-results-shard-${{ matrix.shard }}.md"
           cm report -f json > "codemender-results-shard-${{ matrix.shard }}.json"
           cat "codemender-results-shard-${{ matrix.shard }}.md" >> "$GITHUB_STEP_SUMMARY"
-      
       - name: Upload Shard Report Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -135,7 +139,6 @@ jobs:
             codemender-results-shard-${{ matrix.shard }}.md
             codemender-results-shard-${{ matrix.shard }}.json
           retention-days: 7
-  
   aggregate-results:
     name: Aggregate CodeMender Results
     needs: deep-scan-shard
@@ -148,7 +151,6 @@ jobs:
           pattern: codemender-report-shard-*
           path: shard-reports
           merge-multiple: true
-      
       - name: Publish Combined Report Summary
         run: |
           echo "# CodeMender Deep Scan — Combined Report (10 Shards)" >> "$GITHUB_STEP_SUMMARY"
