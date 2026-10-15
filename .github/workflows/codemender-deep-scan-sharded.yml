@@ -125,8 +125,7 @@ jobs:
             --deep \
             --deep-workers="$CM_WORKERS" \
             --model="$CM_MODEL" \
-            --sandbox=false \
-            -v
+            --sandbox=false
           cm report -f md > "codemender-results-shard-${{ matrix.shard }}.md"
           cm report -f json > "codemender-results-shard-${{ matrix.shard }}.json"
           cat "codemender-results-shard-${{ matrix.shard }}.md" >> "$GITHUB_STEP_SUMMARY"
